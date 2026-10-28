@@ -379,12 +379,17 @@ class AIService:
         t = t.strip()
         first_brace = t.find("{")
         last_brace = t.rfind("}")
-        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-            return t[first_brace:last_brace + 1]
         first_bracket = t.find("[")
         last_bracket = t.rfind("]")
-        if first_bracket != -1 and last_bracket != -1 and last_bracket > first_bracket:
+
+        has_brace = first_brace != -1 and last_brace != -1 and last_brace > first_brace
+        has_bracket = first_bracket != -1 and last_bracket != -1 and last_bracket > first_bracket
+
+        # If array starts before first object brace, preserve outer array brackets
+        if has_bracket and (not has_brace or first_bracket < first_brace):
             return t[first_bracket:last_bracket + 1]
+        elif has_brace:
+            return t[first_brace:last_brace + 1]
         return t
 
     async def synthesize_news_into_ideas(
@@ -493,6 +498,7 @@ Generate high-performing creator angles. Return ONLY valid JSON:
         tone: str,
         duration_sec: int,
         custom_instructions: Optional[str] = None,
+        creator_style: Optional[Dict[str, Any]] = None,
         api_key: Optional[str] = None,
         provider: Optional[str] = None,
         model: Optional[str] = None,
@@ -500,6 +506,28 @@ Generate high-performing creator angles. Return ONLY valid JSON:
     ) -> Dict[str, Any]:
         """Generate a complete video script with hooks, scene breakdown, and CTAs across any chosen provider."""
         self._require_user_key(provider=provider, model=model, api_key=api_key, prefs=prefs)
+        
+        creator_persona_text = ""
+        if creator_style:
+            c_name = creator_style.get("creator_name", "Creator")
+            c_handle = creator_style.get("handle", "")
+            c_pacing = creator_style.get("pacing_style", "")
+            c_hooks = creator_style.get("signature_hooks", [])
+            c_notes = creator_style.get("personal_notes", "")
+            c_angles = creator_style.get("original_angles", "")
+            
+            hooks_formatted = "\n".join([f"  - \"{h}\"" for h in c_hooks[:3]]) if c_hooks else "None specified"
+            creator_persona_text = f"""
+Creator Persona & Voice to Emulate:
+- Emulate the delivery style and presence of: {c_name} ({c_handle})
+- Delivery & Pacing Cadence: {c_pacing or 'Fast-paced, high retention'}
+- Signature Hook Formulas (Model the opening 3-5 seconds after these patterns):
+{hooks_formatted}
+- Storytelling & Retention Techniques: {c_notes}
+- Emulation Guidance: {c_angles}
+CRITICAL INSTRUCTION: Channel this creator's pacing, phraseology, and cadence into every scene and dialogue line.
+"""
+
         extra_context = f"\nContext / Angles / Hooks to incorporate:\n{custom_instructions}\n" if custom_instructions else ""
         prompt = f"""You are an elite short-form scriptwriter and video creator.
 Topic: {topic}
@@ -507,7 +535,7 @@ Niche: {niche}
 Platform: {platform}
 Format: {format}
 Tone: {tone}
-Target Duration: {duration_sec} seconds (~{int(duration_sec * 2.5)} spoken words){extra_context}
+Target Duration: {duration_sec} seconds (~{int(duration_sec * 2.5)} spoken words){creator_persona_text}{extra_context}
 
 Generate a high-retention script. Return ONLY valid JSON:
 {{
@@ -1199,6 +1227,84 @@ Analyze this creator's style and provide actionable intelligence. Return ONLY a 
                 "message": res.get("error", "Connection failed"),
                 "key_preview": k_preview
             }
+
+    async def synthesize_ideas_cross_pillar(
+        self,
+        user_niche: str,
+        source_type: str,
+        news_article: Optional[Any] = None,
+        creator: Optional[Any] = None,
+        topic_prompt: Optional[str] = None,
+        count: int = 3,
+        prefs: Optional[UserPreferences] = None
+    ) -> List[Dict[str, Any]]:
+        """Synthesize ideas combining breaking news, creator watchlist voice/style, or custom themes."""
+        self._require_user_key(prefs=prefs)
+
+        context_blocks = []
+        if news_article:
+            context_blocks.append(f"""BREAKING NEWS SOURCE:
+Headline: {news_article.headline}
+Source: {news_article.source_name}
+Summary: {news_article.summary}
+URL: {news_article.source_url}""")
+
+        if creator:
+            hooks_fmt = "\n".join([f"  - \"{h}\"" for h in (creator.signature_hooks or [])[:3]]) if creator.signature_hooks else "None"
+            context_blocks.append(f"""CREATOR VOICE & STYLE TO EMULATE:
+Creator: {creator.creator_name} ({creator.handle})
+Platform: {creator.platform}
+Pacing & Rhythm: {creator.pacing_style or 'Fast, punchy'}
+Signature Hook Patterns:
+{hooks_fmt}
+Storytelling Techniques: {creator.personal_notes or 'Clear, direct breakdowns'}
+Original Angles: {creator.original_angles or ''}""")
+
+        if topic_prompt:
+            context_blocks.append(f"""CUSTOM THEME / PROMPT:\n{topic_prompt}""")
+
+        context_str = "\n\n".join(context_blocks) if context_blocks else "Generate trending, high-velocity topics."
+
+        prompt = f"""You are an elite creative director for video creators.
+User's Target Niche: {user_niche}
+Mode: {source_type.upper()}
+
+{context_str}
+
+Generate {count} distinct, high-impact content ideas tailored to the user's niche. If a creator style is specified, the ideas, hook formulas, and tone MUST heavily reflect that creator's signature pacing and delivery.
+
+Return ONLY a valid JSON array of objects with this schema:
+[
+  {{
+    "title": "Magnetic, punchy video title",
+    "description": "2 sentence explanation of why this angle will captivate viewers right now",
+    "intended_platform": "YouTube",
+    "category": "{user_niche}",
+    "priority": "High",
+    "tags": ["trending", "idea"],
+    "hook_formulas": [
+      "Curiosity opening hook",
+      "Contrarian opening hook"
+    ],
+    "talking_points": [
+      "Key point or scene 1",
+      "Key point or scene 2",
+      "Takeaway / CTA"
+    ],
+    "pacing_note": "Guidance on delivery rhythm"
+  }}
+]"""
+
+        res = await self.execute_completion(prompt=prompt, prefs=prefs)
+        if res.get("success") and res.get("text"):
+            try:
+                data = json.loads(self._clean_json_str(res["text"]))
+                if isinstance(data, list):
+                    return data
+            except Exception as ex:
+                print(f"[AIService] JSON error in cross-pillar ideas: {ex}")
+                raise RuntimeError(f"Could not parse generated ideas: {ex}")
+        raise RuntimeError(res.get("error") or "AI idea generation failed")
 
     async def test_prompt(
         self,

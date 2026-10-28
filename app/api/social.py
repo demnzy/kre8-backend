@@ -80,20 +80,35 @@ def fetch_youtube_telemetry(handle_or_url: str) -> Dict[str, Any]:
         m = re.search(r'youtube\.com/@([a-zA-Z0-9_\-\.]+)', clean_handle)
         if m:
             clean_handle = m.group(1)
+        elif "/channel/" in clean_handle:
+            clean_handle = clean_handle.split('/channel/')[-1].split('/')[0].split('?')[0]
         else:
-            clean_handle = clean_handle.split('/')[-1]
+            clean_handle = clean_handle.split('/')[-1].split('?')[0]
     clean_handle = clean_handle.lstrip('@')
 
-    url = f"https://www.youtube.com/@{clean_handle}"
+    if clean_handle.startswith("UC") and len(clean_handle) >= 20:
+        url = f"https://www.youtube.com/channel/{clean_handle}"
+    else:
+        url = f"https://www.youtube.com/@{clean_handle}"
+
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept-Language': 'en-US,en;q=0.9'
     }
 
     try:
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=10) as res:
-            html = res.read().decode('utf-8', errors='ignore')
+        html = ""
+        try:
+            p = subprocess.run(["curl.exe", "-s", "-L", "--max-time", "15", url], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, errors="ignore")
+            if p.returncode == 0 and p.stdout:
+                html = p.stdout
+        except Exception:
+            pass
+
+        if not html:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=12) as res:
+                html = res.read().decode('utf-8', errors='ignore')
 
         title_m = re.search(r'<meta property="og:title" content="([^"]+)"', html) or re.search(r'<title>([^<]+?)(?: - YouTube)?</title>', html)
         channel_title = title_m.group(1).replace(" - YouTube", "").strip() if title_m else clean_handle
@@ -101,22 +116,42 @@ def fetch_youtube_telemetry(handle_or_url: str) -> Dict[str, Any]:
         avatar_m = re.search(r'<meta property="og:image" content="([^"]+)"', html)
         avatar_url = avatar_m.group(1) if avatar_m else None
 
-        cid_m = re.search(r'"externalId":"([^"]+)"', html) or re.search(r'<meta itemprop="channelId" content="([^"]+)"', html)
-        cid = cid_m.group(1) if cid_m else None
+        cid_m = re.search(r'"externalId":"([^"]+)"', html) or re.search(r'"browseId":"(UC[a-zA-Z0-9_\-]+)"', html) or re.search(r'<meta itemprop="channelId" content="([^"]+)"', html)
+        cid = cid_m.group(1) if cid_m else (clean_handle if clean_handle.startswith("UC") else None)
 
         # Followers / subs
-        sub_m = re.search(r'([0-9\.,]+[KMBkmb]?\s+subscribers)', html, re.IGNORECASE)
-        sub_text = sub_m.group(1) if sub_m else None
+        sub_text = None
         followers = 0
-        if sub_text:
-            m = re.search(r'([\d\.,]+)\s*([KMBkmb])?', sub_text)
-            if m:
-                val = float(m.group(1).replace(',', ''))
-                unit = (m.group(2) or '').upper()
-                if unit == 'K': followers = int(val * 1000)
-                elif unit == 'M': followers = int(val * 1000000)
-                elif unit == 'B': followers = int(val * 1000000000)
-                else: followers = int(val)
+
+        # Pattern 1: userInteractionCount (raw integer)
+        uic_m = re.search(r'"userInteractionCount":"(\d+)"', html)
+        if uic_m:
+            count = int(uic_m.group(1))
+            followers = count
+            if count >= 1_000_000:
+                sub_text = f"{count / 1_000_000:.1f}M subscribers"
+            elif count >= 1_000:
+                sub_text = f"{count / 1_000:.1f}K subscribers"
+            else:
+                sub_text = f"{count:,} subscribers"
+        else:
+            sub_content_m = re.search(r'"content":"([0-9\.]+[KMBkmb]?\s+subscribers?)"', html, re.IGNORECASE)
+            if sub_content_m:
+                sub_text = sub_content_m.group(1)
+            else:
+                sub_m = re.search(r'([0-9\.,]+[KMBkmb]?\s+subscribers)', html, re.IGNORECASE)
+                if sub_m:
+                    sub_text = sub_m.group(1)
+
+            if sub_text:
+                m = re.search(r'([\d\.,]+)\s*([KMBkmb])?', sub_text)
+                if m:
+                    val = float(m.group(1).replace(',', ''))
+                    unit = (m.group(2) or '').upper()
+                    if unit == 'K': followers = int(val * 1000)
+                    elif unit == 'M': followers = int(val * 1000000)
+                    elif unit == 'B': followers = int(val * 1000000000)
+                    else: followers = int(val)
 
         # Videos count
         vid_m = re.search(r'([0-9\.,]+[KMBkmb]?\s+videos)', html, re.IGNORECASE)

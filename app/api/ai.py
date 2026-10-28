@@ -3,7 +3,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.models.models import User, UserPreferences, Script, ScriptClip, SocialAccount, AnalyticsSnapshot, ContentItem
+from app.models.models import User, UserPreferences, Script, ScriptClip, SocialAccount, AnalyticsSnapshot, ContentItem, CreatorWatchlist
 from app.schemas.schemas import (
     AIScriptGenRequest,
     AIClipsBreakdownRequest,
@@ -27,6 +27,23 @@ async def generate_script(
     prefs = db.query(UserPreferences).filter(UserPreferences.user_id == current_user.id).first()
     niche = req.niche or (prefs.primary_niche if prefs else "Technology")
 
+    creator_style = req.creator_style
+    if not creator_style and req.creator_watchlist_id:
+        c = db.query(CreatorWatchlist).filter(
+            CreatorWatchlist.id == req.creator_watchlist_id,
+            CreatorWatchlist.user_id == current_user.id
+        ).first()
+        if c:
+            creator_style = {
+                "creator_name": c.creator_name,
+                "handle": c.handle,
+                "platform": c.platform,
+                "pacing_style": c.pacing_style,
+                "signature_hooks": c.signature_hooks,
+                "personal_notes": c.personal_notes,
+                "original_angles": c.original_angles
+            }
+
     try:
         result = await ai_service.generate_script(
             topic=req.topic,
@@ -36,6 +53,7 @@ async def generate_script(
             tone=req.tone or "Engaging",
             duration_sec=req.target_duration_seconds or 60,
             custom_instructions=req.custom_instructions,
+            creator_style=creator_style,
             prefs=prefs
         )
         return result

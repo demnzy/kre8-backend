@@ -446,6 +446,13 @@ class CreatorInspectResponse(BaseModel):
     error: Optional[str] = None
 
 # AI Action Schemas
+class IdeasSynthesizeRequest(BaseModel):
+    source_type: str = "news"  # 'news', 'watchlist', 'hybrid', 'topic'
+    news_article_id: Optional[int] = None
+    creator_watchlist_id: Optional[int] = None
+    topic_prompt: Optional[str] = None
+    count: Optional[int] = 3
+
 class AIScriptGenRequest(BaseModel):
     topic: str
     niche: Optional[str] = None
@@ -454,6 +461,8 @@ class AIScriptGenRequest(BaseModel):
     tone: Optional[str] = "Engaging & Direct"
     target_duration_seconds: Optional[int] = 60
     custom_instructions: Optional[str] = None
+    creator_watchlist_id: Optional[int] = None
+    creator_style: Optional[Dict[str, Any]] = None
 
 class AIClipsBreakdownRequest(BaseModel):
     script_text: str

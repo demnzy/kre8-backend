@@ -2,8 +2,9 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.models.models import User, ContentIdea, ContentItem, Script
-from app.schemas.schemas import ContentIdeaCreate, ContentIdeaUpdate, ContentIdeaOut, ContentItemOut, ScriptOut
+from app.models.models import User, ContentIdea, ContentItem, Script, NewsArticle, CreatorWatchlist, UserPreferences
+from app.schemas.schemas import ContentIdeaCreate, ContentIdeaUpdate, ContentIdeaOut, ContentItemOut, ScriptOut, IdeasSynthesizeRequest
+from app.services.ai_service import ai_service
 from app.api.auth import get_current_user
 
 router = APIRouter(prefix="/ideas", tags=["ideas"])
@@ -100,3 +101,83 @@ def convert_idea_to_content(
     db.commit()
     db.refresh(item)
     return item
+
+@router.post("/synthesize", response_model=List[ContentIdeaOut])
+async def synthesize_ideas(
+    req: IdeasSynthesizeRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Synthesize high-impact content ideas from breaking news, a creator's watchlist style, or custom prompts."""
+    prefs = db.query(UserPreferences).filter(UserPreferences.user_id == current_user.id).first()
+    user_niche = (prefs.sub_niche if prefs and prefs.sub_niche else (prefs.primary_niche if prefs and prefs.primary_niche else "Technology"))
+
+    news_article = None
+    if req.news_article_id:
+        news_article = db.query(NewsArticle).filter(NewsArticle.id == req.news_article_id).first()
+
+    creator = None
+    if req.creator_watchlist_id:
+        creator = db.query(CreatorWatchlist).filter(
+            CreatorWatchlist.id == req.creator_watchlist_id,
+            CreatorWatchlist.user_id == current_user.id
+        ).first()
+
+    try:
+        raw_ideas = await ai_service.synthesize_ideas_cross_pillar(
+            user_niche=user_niche,
+            source_type=req.source_type,
+            news_article=news_article,
+            creator=creator,
+            topic_prompt=req.topic_prompt,
+            count=req.count or 3,
+            prefs=prefs
+        )
+
+        saved_ideas = []
+        for item in raw_ideas:
+            hooks = item.get("hook_formulas", [])
+            points = item.get("talking_points", [])
+            pacing = item.get("pacing_note", "")
+
+            notes_sections = []
+            if pacing:
+                notes_sections.append(f"Pacing & Style:\n{pacing}")
+            if hooks:
+                notes_sections.append("Hook Formulas:\n" + "\n".join([f"• {h}" for h in hooks]))
+            if points:
+                notes_sections.append("Talking Points:\n" + "\n".join([f"- {p}" for p in points]))
+
+            source_insp = None
+            tags = list(item.get("tags", []))
+            if news_article:
+                source_insp = f"News: {news_article.headline}"
+                tags.append("news-driven")
+            if creator:
+                source_insp = f"Inspired by {creator.creator_name} ({creator.handle})" if not source_insp else f"{source_insp} + {creator.creator_name} style"
+                tags.append("watchlist-inspired")
+                tags.append(creator.handle.lower().lstrip('@'))
+
+            idea = ContentIdea(
+                user_id=current_user.id,
+                title=item.get("title", "Untitled Angle"),
+                description=item.get("description", ""),
+                category=item.get("category", user_niche),
+                intended_platform=item.get("intended_platform", "YouTube"),
+                source_inspiration=source_insp,
+                priority=item.get("priority", "High"),
+                tags=list(set(tags)),
+                status="Active",
+                notes="\n\n".join(notes_sections) if notes_sections else None
+            )
+            db.add(idea)
+            saved_ideas.append(idea)
+
+        db.commit()
+        for s in saved_ideas:
+            db.refresh(s)
+        return saved_ideas
+    except (PermissionError, RuntimeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
