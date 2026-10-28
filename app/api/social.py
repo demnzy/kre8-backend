@@ -1,6 +1,8 @@
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 import re
+import json
+import subprocess
 import urllib.request
 import feedparser
 from fastapi import APIRouter, Depends, HTTPException
@@ -629,16 +631,30 @@ async def inspect_creator(
     platform = payload.platform or "YouTube"
     handle = ""
     profile_url = ""
+    cid = None
 
-    # Detect platform and extract handle if URL is provided
-    if raw_input.startswith("http://") or raw_input.startswith("https://"):
+    lowered = raw_input.lower()
+
+    # Detect platform and parse input
+    # Check for YouTube channel ID (/channel/UC... or raw UC...)
+    yt_cid_m = re.search(r'(?:youtube\.com/channel/|youtube\.com/c/|youtube\.com/user/|^)(UC[a-zA-Z0-9_\-]{20,})', raw_input)
+    if yt_cid_m:
+        platform = "YouTube"
+        cid = yt_cid_m.group(1)
+        profile_url = f"https://www.youtube.com/channel/{cid}"
+        handle = f"@{cid}"
+    elif "youtube.com" in lowered or "youtu.be" in lowered:
+        platform = "YouTube"
+        m = re.search(r'youtube\.com/@([a-zA-Z0-9_\-\.]+)', raw_input)
+        if m:
+            handle = f"@{m.group(1)}"
+            profile_url = f"https://www.youtube.com/{handle}"
+        else:
+            profile_url = raw_input
+            handle = "@channel"
+    elif raw_input.startswith("http://") or raw_input.startswith("https://"):
         profile_url = raw_input
-        lowered = raw_input.lower()
-        if "youtube.com" in lowered or "youtu.be" in lowered:
-            platform = "YouTube"
-            m = re.search(r'youtube\.com/@([a-zA-Z0-9_\-\.]+)', raw_input)
-            handle = f"@{m.group(1)}" if m else "@channel"
-        elif "twitter.com" in lowered or "x.com" in lowered:
+        if "twitter.com" in lowered or "x.com" in lowered:
             platform = "X"
             m = re.search(r'(?:twitter|x)\.com/([a-zA-Z0-9_]+)', raw_input)
             handle = f"@{m.group(1)}" if m else "@profile"
@@ -657,10 +673,10 @@ async def inspect_creator(
         else:
             handle = "@creator"
     else:
-        # Handle given as @name or name
+        # Handle given as @name or raw string
         clean_handle = raw_input.lstrip('@')
         handle = f"@{clean_handle}"
-        if platform.lower() == "x" or platform.lower() == "twitter":
+        if platform.lower() in ("x", "twitter"):
             platform = "X"
             profile_url = f"https://x.com/{clean_handle}"
         elif platform.lower() == "tiktok":
@@ -683,44 +699,108 @@ async def inspect_creator(
     recent_titles = []
 
     request_headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9"
     }
 
     # Live inspection logic
     try:
         if platform == "YouTube":
-            clean_yt = handle.lstrip('@')
-            yt_url = f"https://www.youtube.com/@{clean_yt}"
-            http_req = urllib.request.Request(yt_url, headers=request_headers)
-            with urllib.request.urlopen(http_req, timeout=8) as res:
-                html = res.read().decode("utf-8", errors="ignore")
-
-            title_m = re.search(r'<meta property="og:title" content="([^"]+)"', html) or re.search(r'<title>([^<]+?)(?: - YouTube)?</title>', html)
-            if title_m:
-                creator_name = title_m.group(1).replace(" - YouTube", "").strip()
-
-            avatar_m = re.search(r'<meta property="og:image" content="([^"]+)"', html)
-            if avatar_m:
-                avatar_url = avatar_m.group(1)
-
-            desc_m = re.search(r'<meta property="og:description" content="([^"]+)"', html)
-            if desc_m:
-                bio = desc_m.group(1).strip()
-
-            sub_m = re.search(r'([0-9\.]+[KMBkmb]?\s+subscribers)', html, re.IGNORECASE)
-            if sub_m:
-                subscriber_count_text = sub_m.group(1)
-
-            cid_m = re.search(r'"externalId":"([^"]+)"', html) or re.search(r'<meta itemprop="channelId" content="([^"]+)"', html)
-            if cid_m:
-                cid = cid_m.group(1)
+            # 1. Fast RSS Feed Ingestion if CID is known
+            if cid:
                 rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}"
                 try:
                     feed = feedparser.parse(rss_url)
-                    recent_titles = [e.get("title") for e in feed.entries[:8] if e.get("title")]
+                    if feed and feed.entries:
+                        recent_titles = [e.get("title") for e in feed.entries[:8] if e.get("title")]
+                        feed_title = feed.feed.get("title")
+                        if feed_title:
+                            creator_name = feed_title
+                        # Fast oEmbed to extract exact author vanity handle
+                        first_vid = feed.entries[0].get("yt_videoid")
+                        if first_vid:
+                            try:
+                                oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={first_vid}&format=json"
+                                req_oe = urllib.request.Request(oembed_url, headers=request_headers)
+                                with urllib.request.urlopen(req_oe, timeout=4) as ores:
+                                    odata = json.loads(ores.read().decode("utf-8"))
+                                    if odata.get("author_name"):
+                                        creator_name = odata["author_name"]
+                                    if odata.get("author_url"):
+                                        aurl = odata["author_url"]
+                                        am = re.search(r'youtube\.com/@([a-zA-Z0-9_\-\.]+)', aurl)
+                                        if am:
+                                            handle = f"@{am.group(1)}"
+                                            profile_url = aurl
+                            except Exception:
+                                pass
                 except Exception as rss_err:
-                    print(f"[InspectCreator] RSS parse note: {rss_err}")
+                    print(f"[InspectCreator] Initial RSS parse note: {rss_err}")
+
+            # 2. HTML Page Metadata Ingestion (curl.exe with urllib fallback)
+            html = ""
+            target_url = profile_url if (profile_url and "youtube.com" in profile_url) else f"https://www.youtube.com/{handle}"
+            try:
+                p = subprocess.run(["curl.exe", "-s", "-L", "--max-time", "6", target_url], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, errors="ignore")
+                if p.returncode == 0 and p.stdout:
+                    html = p.stdout
+            except Exception:
+                pass
+
+            if not html:
+                try:
+                    http_req = urllib.request.Request(target_url, headers=request_headers)
+                    with urllib.request.urlopen(http_req, timeout=5) as res:
+                        html = res.read().decode("utf-8", errors="ignore")
+                except Exception as h_err:
+                    print(f"[InspectCreator] urllib fetch note: {h_err}")
+
+            if html:
+                title_m = re.search(r'<meta property="og:title" content="([^"]+)"', html) or re.search(r'<title>([^<]+?)(?: - YouTube)?</title>', html)
+                if title_m:
+                    creator_name = title_m.group(1).replace(" - YouTube", "").strip()
+
+                avatar_m = re.search(r'<meta property="og:image" content="([^"]+)"', html)
+                if avatar_m:
+                    avatar_url = avatar_m.group(1)
+
+                desc_m = re.search(r'<meta property="og:description" content="([^"]+)"', html)
+                if desc_m:
+                    bio = desc_m.group(1).strip()
+
+                canonical_m = re.search(r'"canonicalBaseUrl":"([^"]+)"', html) or re.search(r'"alternateName":"(@[a-zA-Z0-9_\-\.]+)"', html)
+                if canonical_m:
+                    c_val = canonical_m.group(1).lstrip("/")
+                    handle = c_val if c_val.startswith("@") else f"@{c_val}"
+                    profile_url = f"https://www.youtube.com/{handle}"
+
+                # Structured subscriber count or regex
+                sub_count_m = re.search(r'"userInteractionCount":"(\d+)"', html)
+                if sub_count_m:
+                    count = int(sub_count_m.group(1))
+                    if count >= 1_000_000:
+                        subscriber_count_text = f"{count / 1_000_000:.1f}M subscribers"
+                    elif count >= 1_000:
+                        subscriber_count_text = f"{count / 1_000:.0f}K subscribers"
+                    else:
+                        subscriber_count_text = f"{count:,} subscribers"
+                else:
+                    sub_m = re.search(r'([0-9\.]+[KMBkmb]?\s+subscribers?)', html, re.IGNORECASE)
+                    if sub_m:
+                        subscriber_count_text = sub_m.group(1)
+
+                # If recent titles not fetched yet, extract cid and query RSS
+                if not recent_titles:
+                    cid_m = re.search(r'"browseId":"(UC[a-zA-Z0-9_\-]+)"', html) or re.search(r'<meta itemprop="channelId" content="([^"]+)"', html) or re.search(r'"externalId":"([^"]+)"', html)
+                    if cid_m:
+                        cid = cid_m.group(1)
+                        rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}"
+                        try:
+                            feed = feedparser.parse(rss_url)
+                            if feed and feed.entries:
+                                recent_titles = [e.get("title") for e in feed.entries[:8] if e.get("title")]
+                        except Exception as rss_err:
+                            print(f"[InspectCreator] Post-scrape RSS error: {rss_err}")
         else:
             # Fallback OpenGraph scrape for other platforms
             if profile_url:
