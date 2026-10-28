@@ -396,6 +396,7 @@ class AIService:
         self,
         db: Session,
         articles: List[NewsArticle],
+        creator: Optional[Any] = None,
         prefs: Optional[UserPreferences] = None,
         force_regenerate: bool = False
     ) -> List[NewsAIIdea]:
@@ -406,6 +407,19 @@ class AIService:
         sub_niche = prefs.sub_niche if prefs else "AI & Tech"
         audience = prefs.target_audience if prefs else "Digital creators and enthusiasts"
         tone = prefs.preferred_tone if prefs else "Engaging & Informative"
+
+        creator_voice_instruction = ""
+        if creator:
+            hooks_sample = ("\n".join(f"  - \"{h}\"" for h in (creator.signature_hooks or [])[:3])) if creator.signature_hooks else "None"
+            creator_voice_instruction = f"""
+Creator Voice & Persona to Emulate:
+- Emulate the delivery style and pacing of: {creator.creator_name} ({creator.handle})
+- Pacing & Rhythm: {creator.pacing_style or 'High-retention, concise'}
+- Signature Hook Formulas (Model the viral hooks after these patterns):
+{hooks_sample}
+- Storytelling Notes: {creator.personal_notes or ''}
+CRITICAL: The generated topic angles and viral hooks MUST heavily reflect this creator's signature rhythm and hook formulas.
+"""
 
         pending: List[NewsArticle] = []
         for article in articles[:5]:
@@ -430,7 +444,7 @@ class AIService:
             prompt = f"""You are an elite content strategist for a digital creator in '{niche}' and '{sub_niche}'.
 Target audience: {audience}
 Tone: {tone}
-
+{creator_voice_instruction}
 HEADLINE: {article.headline}
 SOURCE: {article.source_name}
 SUMMARY: {article.summary}

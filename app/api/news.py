@@ -2,7 +2,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.models.models import User, UserPreferences, NewsArticle, NewsAIIdea, ContentIdea
+from app.models.models import User, UserPreferences, NewsArticle, NewsAIIdea, ContentIdea, CreatorWatchlist
 from app.schemas.schemas import NewsArticleOut, NewsAIIdeaOut, ContentIdeaOut
 from app.core.config import settings
 from app.services.news_service import news_service
@@ -49,6 +49,7 @@ async def get_daily_news(
 @router.post("/synthesize", response_model=List[NewsAIIdeaOut])
 async def synthesize_news_to_ideas(
     article_id: Optional[int] = Query(None),
+    creator_id: Optional[int] = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -56,6 +57,13 @@ async def synthesize_news_to_ideas(
     prefs = db.query(UserPreferences).filter(UserPreferences.user_id == current_user.id).first()
     niche = prefs.primary_niche if prefs and prefs.primary_niche else "Technology"
     sub_niche = prefs.sub_niche if prefs and prefs.sub_niche else "Artificial Intelligence & Agents"
+
+    creator = None
+    if creator_id:
+        creator = db.query(CreatorWatchlist).filter(
+            CreatorWatchlist.id == creator_id,
+            CreatorWatchlist.user_id == current_user.id
+        ).first()
 
     if article_id is not None:
         target = db.query(NewsArticle).filter(NewsArticle.id == article_id).first()
@@ -78,8 +86,9 @@ async def synthesize_news_to_ideas(
         ai_ideas = await ai_service.synthesize_news_into_ideas(
             db=db,
             articles=articles,
+            creator=creator,
             prefs=prefs,
-            force_regenerate=(article_id is not None)
+            force_regenerate=(article_id is not None or creator_id is not None)
         )
         return ai_ideas
     except (PermissionError, RuntimeError) as e:
