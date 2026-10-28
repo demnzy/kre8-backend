@@ -49,8 +49,8 @@ def update_goal(
     for field, val in goal_in.model_dump(exclude_unset=True).items():
         setattr(goal, field, val)
 
-    if goal.current_value >= goal.target_value:
-        goal.is_achieved = True
+    if "is_achieved" not in goal_in.model_dump(exclude_unset=True):
+        goal.is_achieved = bool(goal.current_value >= goal.target_value)
 
     db.commit()
     db.refresh(goal)

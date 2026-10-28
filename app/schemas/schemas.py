@@ -34,7 +34,14 @@ class PreferencesUpdate(BaseModel):
     preferred_tone: Optional[str] = None
     preferred_platforms: Optional[List[str]] = None
     weekly_post_goal: Optional[int] = None
+    ai_provider: Optional[str] = "gemini"
+    ai_model: Optional[str] = "gemini-2.5-flash"
     gemini_api_key: Optional[str] = None
+    openai_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
+    groq_api_key: Optional[str] = None
+    openrouter_api_key: Optional[str] = None
+    deepseek_api_key: Optional[str] = None
     news_api_key: Optional[str] = None
     youtube_client_id: Optional[str] = None
     youtube_client_secret: Optional[str] = None
@@ -54,7 +61,14 @@ class PreferencesOut(BaseModel):
     preferred_tone: Optional[str]
     preferred_platforms: List[str]
     weekly_post_goal: int
+    ai_provider: Optional[str] = "gemini"
+    ai_model: Optional[str] = "gemini-2.5-flash"
     gemini_api_key: Optional[str] = None
+    openai_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
+    groq_api_key: Optional[str] = None
+    openrouter_api_key: Optional[str] = None
+    deepseek_api_key: Optional[str] = None
     news_api_key: Optional[str] = None
     youtube_client_id: Optional[str] = None
     linkedin_client_id: Optional[str] = None
@@ -205,6 +219,7 @@ class ScriptCreate(BaseModel):
     generated_hooks: Optional[List[str]] = []
     generated_ctas: Optional[List[str]] = []
     clips: Optional[List[ScriptClipCreate]] = []
+    versions: Optional[List[Dict[str, Any]]] = []
 
 class ScriptUpdate(BaseModel):
     title: Optional[str] = None
@@ -214,6 +229,7 @@ class ScriptUpdate(BaseModel):
     generated_hooks: Optional[List[str]] = None
     generated_ctas: Optional[List[str]] = None
     clips: Optional[List[ScriptClipCreate]] = None
+    versions: Optional[List[Dict[str, Any]]] = None
 
 class ScriptOut(BaseModel):
     id: int
@@ -225,6 +241,7 @@ class ScriptOut(BaseModel):
     generated_hooks: List[str]
     generated_ctas: List[str]
     clips: List[ScriptClipOut] = []
+    versions: Optional[List[Dict[str, Any]]] = []
     created_at: datetime
     updated_at: datetime
 
@@ -248,6 +265,7 @@ class TaskCreate(BaseModel):
 class TaskUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
+    content_item_id: Optional[int] = None
     due_date: Optional[datetime] = None
     priority: Optional[str] = None
     is_completed: Optional[bool] = None
@@ -309,6 +327,16 @@ class CalendarEventCreate(BaseModel):
     reminder_minutes_before: Optional[int] = 30
     notes: Optional[str] = None
 
+class CalendarEventUpdate(BaseModel):
+    title: Optional[str] = None
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    content_item_id: Optional[int] = None
+    event_type: Optional[str] = None
+    platform: Optional[str] = None
+    reminder_minutes_before: Optional[int] = None
+    notes: Optional[str] = None
+
 class CalendarEventOut(BaseModel):
     id: int
     title: str
@@ -333,8 +361,11 @@ class GoalCreate(BaseModel):
 
 class GoalUpdate(BaseModel):
     title: Optional[str] = None
+    goal_type: Optional[str] = None
     target_value: Optional[float] = None
     current_value: Optional[float] = None
+    unit: Optional[str] = None
+    deadline: Optional[datetime] = None
     is_achieved: Optional[bool] = None
 
 class GoalOut(BaseModel):
@@ -357,6 +388,23 @@ class CreatorWatchlistCreate(BaseModel):
     platform: Optional[str] = "YouTube"
     profile_url: Optional[str] = None
     topic_niche: Optional[str] = None
+    avatar_url: Optional[str] = None
+    subscriber_count_text: Optional[str] = None
+    pacing_style: Optional[str] = None
+    signature_hooks: Optional[List[str]] = []
+    personal_notes: Optional[str] = None
+    original_angles: Optional[str] = None
+
+class CreatorWatchlistUpdate(BaseModel):
+    creator_name: Optional[str] = None
+    handle: Optional[str] = None
+    platform: Optional[str] = None
+    profile_url: Optional[str] = None
+    topic_niche: Optional[str] = None
+    avatar_url: Optional[str] = None
+    subscriber_count_text: Optional[str] = None
+    pacing_style: Optional[str] = None
+    signature_hooks: Optional[List[str]] = None
     personal_notes: Optional[str] = None
     original_angles: Optional[str] = None
 
@@ -365,13 +413,37 @@ class CreatorWatchlistOut(BaseModel):
     creator_name: str
     handle: str
     platform: str
-    profile_url: Optional[str]
-    topic_niche: Optional[str]
-    personal_notes: Optional[str]
-    original_angles: Optional[str]
+    profile_url: Optional[str] = None
+    topic_niche: Optional[str] = None
+    avatar_url: Optional[str] = None
+    subscriber_count_text: Optional[str] = None
+    pacing_style: Optional[str] = None
+    signature_hooks: Optional[List[str]] = []
+    personal_notes: Optional[str] = None
+    original_angles: Optional[str] = None
 
     class Config:
         from_attributes = True
+
+class CreatorInspectRequest(BaseModel):
+    url_or_handle: str
+    platform: Optional[str] = None
+
+class CreatorInspectResponse(BaseModel):
+    success: bool
+    creator_name: str
+    handle: str
+    platform: str
+    profile_url: str
+    avatar_url: Optional[str] = None
+    subscriber_count_text: Optional[str] = None
+    topic_niche: str
+    personal_notes: str
+    original_angles: str
+    pacing_style: str
+    signature_hooks: List[str] = []
+    recent_titles: List[str] = []
+    error: Optional[str] = None
 
 # AI Action Schemas
 class AIScriptGenRequest(BaseModel):
@@ -392,3 +464,38 @@ class AINoteExtractRequest(BaseModel):
 
 class AIPerformanceReviewRequest(BaseModel):
     timeframe: Optional[str] = "Last 30 Days"
+
+class AIReviseScriptRequest(BaseModel):
+    script_id: Optional[int] = None
+    current_script: Optional[str] = None
+    full_script: Optional[str] = None
+    current_clips: Optional[List[Dict[str, Any]]] = None
+    clips: Optional[List[Dict[str, Any]]] = None
+    instruction: str
+    conversation_history: Optional[List[Dict[str, str]]] = []
+    target_duration_seconds: Optional[int] = 60
+    tone: Optional[str] = "Conversational"
+
+    @property
+    def effective_script(self) -> str:
+        return self.current_script or self.full_script or ""
+
+    @property
+    def effective_clips(self) -> List[Dict[str, Any]]:
+        return self.current_clips or self.clips or []
+
+class AIReviseScriptResponse(BaseModel):
+    revised_script: str
+    revised_clips: List[Dict[str, Any]]
+    summary_of_changes: str
+    assistant_message: str
+    version_number: int
+    used_provider: str
+    used_model: str
+    versions: Optional[List[Dict[str, Any]]] = []
+
+class AITestConnectionRequest(BaseModel):
+    provider: Optional[str] = "gemini"
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+

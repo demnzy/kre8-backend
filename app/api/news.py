@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.models.models import User, UserPreferences, NewsArticle, NewsAIIdea, ContentIdea
 from app.schemas.schemas import NewsArticleOut, NewsAIIdeaOut, ContentIdeaOut
+from app.core.config import settings
 from app.services.news_service import news_service
 from app.services.ai_service import ai_service
 from app.api.auth import get_current_user
@@ -21,40 +22,68 @@ async def get_daily_news(
     niche = prefs.primary_niche if prefs and prefs.primary_niche else "Technology"
     sub_niche = prefs.sub_niche if prefs and prefs.sub_niche else "Artificial Intelligence & Agents"
     keywords = prefs.search_keywords if prefs else ""
+    active_key = (prefs.news_api_key if prefs and prefs.news_api_key else None) or getattr(settings, "NEWS_API_KEY", "")
 
-    articles = await news_service.get_or_refresh_daily_news(
-        db=db,
-        niche=niche,
-        sub_niche=sub_niche,
-        keywords=keywords,
-        force_refresh=force_refresh,
-        api_key=prefs.news_api_key if prefs else None
-    )
+    try:
+        articles = await news_service.get_or_refresh_daily_news(
+            db=db,
+            niche=niche,
+            sub_niche=sub_niche,
+            keywords=keywords,
+            force_refresh=force_refresh,
+            api_key=active_key
+        )
+    except Exception as e:
+        # Live fetch failed: serve the most recent cached articles instead of erroring
+        print(f"[News] Live fetch failed, serving cache: {e}")
+        db.rollback()
+        articles = (
+            db.query(NewsArticle)
+            .filter(NewsArticle.niche == niche, NewsArticle.sub_niche == sub_niche)
+            .order_by(NewsArticle.id.desc())
+            .limit(20)
+            .all()
+        )
     return articles
 
 @router.post("/synthesize", response_model=List[NewsAIIdeaOut])
 async def synthesize_news_to_ideas(
+    article_id: Optional[int] = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Pipes the daily news articles into Gemini to generate actionable creator angles and viral hooks."""
+    """Pipes daily news articles into the user's configured AI provider to generate actionable creator angles and viral hooks."""
     prefs = db.query(UserPreferences).filter(UserPreferences.user_id == current_user.id).first()
     niche = prefs.primary_niche if prefs and prefs.primary_niche else "Technology"
     sub_niche = prefs.sub_niche if prefs and prefs.sub_niche else "Artificial Intelligence & Agents"
 
-    articles = db.query(NewsArticle).filter(
-        NewsArticle.niche == niche,
-        NewsArticle.sub_niche == sub_niche
-    ).order_by(NewsArticle.id.desc()).limit(5).all()
+    if article_id is not None:
+        target = db.query(NewsArticle).filter(NewsArticle.id == article_id).first()
+        if not target:
+            raise HTTPException(status_code=404, detail="News article not found")
+        articles = [target]
+    else:
+        articles = db.query(NewsArticle).filter(
+            NewsArticle.niche == niche,
+            NewsArticle.sub_niche == sub_niche
+        ).order_by(NewsArticle.id.desc()).limit(5).all()
 
-    if not articles:
-        # Fetch fresh news first
-        articles = await news_service.get_or_refresh_daily_news(
-            db=db, niche=niche, sub_niche=sub_niche, keywords=prefs.search_keywords if prefs else ""
+        if not articles:
+            # Fetch fresh news first
+            articles = await news_service.get_or_refresh_daily_news(
+                db=db, niche=niche, sub_niche=sub_niche, keywords=prefs.search_keywords if prefs else ""
+            )
+
+    try:
+        ai_ideas = await ai_service.synthesize_news_into_ideas(
+            db=db,
+            articles=articles,
+            prefs=prefs,
+            force_regenerate=(article_id is not None)
         )
-
-    ai_ideas = await ai_service.synthesize_news_into_ideas(db=db, articles=articles, prefs=prefs)
-    return ai_ideas
+        return ai_ideas
+    except (PermissionError, RuntimeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/save-angle-as-idea/{angle_id}", response_model=ContentIdeaOut)
 def save_angle_to_ideas_bank(

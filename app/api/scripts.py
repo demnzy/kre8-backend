@@ -29,7 +29,8 @@ def create_script(
         target_duration_seconds=script_in.target_duration_seconds or 60,
         full_script=script_in.full_script or "",
         generated_hooks=script_in.generated_hooks or [],
-        generated_ctas=script_in.generated_ctas or []
+        generated_ctas=script_in.generated_ctas or [],
+        versions=script_in.versions or []
     )
     db.add(script)
     db.commit()

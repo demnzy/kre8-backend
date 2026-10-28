@@ -145,23 +145,24 @@ Check the GitHub link in the description for the full starter repository!""",
 
     # 5. Tasks
     tasks_data = [
-        ("Record B-Roll for Coding Agent Architecture video", now + timedelta(days=1), "High", [
+        ("Record B-Roll for Coding Agent Architecture video", now + timedelta(days=1), "High", created_items[0].id, [
             {"text": "Record terminal running unit test suite", "done": True},
             {"text": "Screen capture architecture diagram in Excalidraw", "done": False},
             {"text": "Record talking head A-roll in 4K", "done": False}
         ]),
-        ("Batch edit 3 short-form clips for TikTok & Shorts", now + timedelta(days=2), "Medium", [
+        ("Batch edit 3 short-form clips for TikTok & Shorts", now + timedelta(days=2), "Medium", created_items[1].id, [
             {"text": "Add auto-captions with bold yellow highlights", "done": False},
             {"text": "Insert whoosh sound effects on transitions", "done": False}
         ]),
-        ("Review weekly YouTube analytics & audience retention drop-offs", now, "Urgent", [
+        ("Review weekly YouTube analytics & audience retention drop-offs", now, "Urgent", None, [
             {"text": "Check retention at the 30-second mark", "done": True},
             {"text": "Adjust thumbnail contrast for upcoming upload", "done": True}
         ])
     ]
-    for title, due, prio, checklist in tasks_data:
+    for title, due, prio, cid, checklist in tasks_data:
         t = Task(
             user_id=current_user.id,
+            content_item_id=cid,
             title=title,
             due_date=due,
             priority=prio,
@@ -172,9 +173,9 @@ Check the GitHub link in the description for the full starter repository!""",
 
     # 6. Notes
     notes_data = [
-        ("Creator Content Strategy: 70/20/10 Rule", "70% proven evergreen formats (tutorials, setups)\n20% breaking news & timely trend breakdowns\n10% high-risk experimental formats (live coding marathons, interviews)", "Strategy", ["frameworks", "growth"], True),
-        ("Best Microphones & Audio Post-Processing Settings", "Shure SM7B into Elgato Wave XLR.\nPlugins in OBS: Reaper ReaEQ, ReaComp, and Waves Clarity VX for background noise reduction.", "Gear & Studio", ["audio", "production"], False),
-        ("Video Hook Formula Bank", "1. 'Most people think X, but Y'\n2. 'Here is what nobody tells you about X'\n3. 'If I had to start over in X from zero, here is what I would do'", "Writing", ["hooks", "scripts"], True)
+        ("Creator Content Strategy: 70/20/10 Rule", "70% proven evergreen formats (tutorials, setups)\n20% breaking news & timely trend breakdowns\n10% high-risk experimental formats (live coding marathons, interviews)", "Research", ["frameworks", "growth"], True),
+        ("Best Microphones & Audio Post-Processing Settings", "Shure SM7B into Elgato Wave XLR.\nPlugins in OBS: Reaper ReaEQ, ReaComp, and Waves Clarity VX for background noise reduction.", "General", ["audio", "production"], False),
+        ("Video Hook Formula Bank", "1. 'Most people think X, but Y'\n2. 'Here is what nobody tells you about X'\n3. 'If I had to start over in X from zero, here is what I would do'", "Script Drafts", ["hooks", "scripts"], True)
     ]
     for title, content, folder, tags, pinned in notes_data:
         n = Note(
@@ -192,7 +193,7 @@ Check the GitHub link in the description for the full starter repository!""",
         ("Publish 4 Videos This Week", "Weekly Posts", 4.0, 2.0, "videos"),
         ("Write 10 Full Video Scripts", "Scripts Written", 10.0, 6.0, "scripts"),
         ("Reach 10,000 YouTube Subscribers", "Follower Milestone", 10000.0, 7840.0, "subscribers"),
-        ("Maintain 30-Day Publishing Streak", "Publishing Streak", 30.0, 18.0, "days")
+        ("Record 12 Short-Form Clips", "Production Target", 12.0, 5.0, "clips")
     ]
     for title, gtype, target, cur, unit in goals_data:
         g = Goal(
@@ -208,17 +209,19 @@ Check the GitHub link in the description for the full starter repository!""",
 
     # 8. Calendar Events
     cal_data = [
-        ("Upload YouTube: Autonomous Coding Agents", now + timedelta(days=2, hours=14), "Scheduled", "YouTube"),
-        ("Post TikTok: 3 VS Code Extensions to Delete", now + timedelta(days=1, hours=17), "Planned", "TikTok"),
-        ("Publish LinkedIn Carousel: LLM App Architecture", now + timedelta(days=4, hours=9), "Planned", "LinkedIn")
+        ("Upload YouTube: Autonomous Coding Agents", now + timedelta(days=2, hours=14), "Scheduled", "YouTube", created_items[0].id, "Final 4K export ready with custom thumbnail."),
+        ("Post TikTok: 3 VS Code Extensions to Delete", now + timedelta(days=1, hours=17), "Planned", "TikTok", created_items[1].id, "Cross-post to YouTube Shorts and Reels."),
+        ("Publish LinkedIn Carousel: LLM App Architecture", now + timedelta(days=4, hours=9), "Planned", "LinkedIn", created_items[2].id, "Include link to full architecture diagram.")
     ]
-    for title, stime, etype, plat in cal_data:
+    for title, stime, etype, plat, cid, notes in cal_data:
         ce = CalendarEvent(
             user_id=current_user.id,
+            content_item_id=cid,
             title=title,
             start_time=stime,
             event_type=etype,
-            platform=plat
+            platform=plat,
+            notes=notes
         )
         db.add(ce)
 

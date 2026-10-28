@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.models.models import User, CalendarEvent, ContentItem
-from app.schemas.schemas import CalendarEventCreate, CalendarEventOut
+from app.schemas.schemas import CalendarEventCreate, CalendarEventUpdate, CalendarEventOut
 from app.api.auth import get_current_user
 
 router = APIRouter(prefix="/calendar", tags=["calendar"])
@@ -41,6 +41,24 @@ def create_event(
         notes=event_in.notes
     )
     db.add(event)
+    db.commit()
+    db.refresh(event)
+    return event
+
+@router.put("/{event_id}", response_model=CalendarEventOut)
+def update_event(
+    event_id: int,
+    event_in: CalendarEventUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    event = db.query(CalendarEvent).filter(CalendarEvent.id == event_id, CalendarEvent.user_id == current_user.id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    for field, val in event_in.model_dump(exclude_unset=True).items():
+        setattr(event, field, val)
+
     db.commit()
     db.refresh(event)
     return event
