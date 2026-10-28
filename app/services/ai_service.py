@@ -1080,7 +1080,7 @@ Generate tailored suggestions. Return ONLY valid JSON:
         self._require_user_key(prefs=prefs)
         
         titles_formatted = "\n".join(f"- {t}" for t in recent_titles[:8]) if recent_titles else "(None available)"
-        user_context = f"The user's own channel niche is: '{user_niche}'." if user_niche else ""
+        user_context = f"User's Own Target Niche: '{user_niche}'. (CRITICAL: Do NOT assign this to the creator. The creator's topic_niche must come strictly from the creator's own content. Use the user's niche ONLY for 'original_angles'.)" if user_niche else ""
 
         prompt = f"""You are an elite creator growth strategist. Dissect this public creator profile:
 Creator Name: {creator_name}
@@ -1095,7 +1095,7 @@ Recent Video / Post Titles:
 
 Analyze this creator's style and provide actionable intelligence. Return ONLY a valid JSON object with these keys:
 {{
-  "topic_niche": "Concise 2-4 word primary niche (e.g. 'Software Engineering & Tech Satire')",
+  "topic_niche": "Concise 2-4 word primary niche derived STRICTLY from the creator's own titles and bio (e.g. 'LLM Systems & AI Engineering', NEVER the user's niche)",
   "pacing_style": "Concise phrase describing delivery & cadence (e.g. 'Hyper-condensed 100s sprints with dry sarcasm')",
   "personal_notes": "2-3 crisp sentences detailing their storytelling structure, retention tricks, and why their audience watches.",
   "signature_hooks": [

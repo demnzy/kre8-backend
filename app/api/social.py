@@ -741,7 +741,7 @@ async def inspect_creator(
             html = ""
             target_url = profile_url if (profile_url and "youtube.com" in profile_url) else f"https://www.youtube.com/{handle}"
             try:
-                p = subprocess.run(["curl.exe", "-s", "-L", "--max-time", "6", target_url], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, errors="ignore")
+                p = subprocess.run(["curl.exe", "-s", "-L", "--max-time", "15", target_url], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, errors="ignore")
                 if p.returncode == 0 and p.stdout:
                     html = p.stdout
             except Exception:
@@ -750,7 +750,7 @@ async def inspect_creator(
             if not html:
                 try:
                     http_req = urllib.request.Request(target_url, headers=request_headers)
-                    with urllib.request.urlopen(http_req, timeout=5) as res:
+                    with urllib.request.urlopen(http_req, timeout=12) as res:
                         html = res.read().decode("utf-8", errors="ignore")
                 except Exception as h_err:
                     print(f"[InspectCreator] urllib fetch note: {h_err}")
@@ -781,17 +781,21 @@ async def inspect_creator(
                     if count >= 1_000_000:
                         subscriber_count_text = f"{count / 1_000_000:.1f}M subscribers"
                     elif count >= 1_000:
-                        subscriber_count_text = f"{count / 1_000:.0f}K subscribers"
+                        subscriber_count_text = f"{count / 1_000:.1f}K subscribers"
                     else:
                         subscriber_count_text = f"{count:,} subscribers"
                 else:
-                    sub_m = re.search(r'([0-9\.]+[KMBkmb]?\s+subscribers?)', html, re.IGNORECASE)
-                    if sub_m:
-                        subscriber_count_text = sub_m.group(1)
+                    sub_content_m = re.search(r'"content":"([0-9\.]+[KMBkmb]?\s+subscribers?)"', html, re.IGNORECASE)
+                    if sub_content_m:
+                        subscriber_count_text = sub_content_m.group(1)
+                    else:
+                        sub_m = re.search(r'([0-9\.]+[KMBkmb]?\s+subscribers?)', html, re.IGNORECASE)
+                        if sub_m:
+                            subscriber_count_text = sub_m.group(1)
 
                 # If recent titles not fetched yet, extract cid and query RSS
                 if not recent_titles:
-                    cid_m = re.search(r'"browseId":"(UC[a-zA-Z0-9_\-]+)"', html) or re.search(r'<meta itemprop="channelId" content="([^"]+)"', html) or re.search(r'"externalId":"([^"]+)"', html)
+                    cid_m = re.search(r'"externalId":"([^"]+)"', html) or re.search(r'"browseId":"(UC[a-zA-Z0-9_\-]+)"', html) or re.search(r'<meta itemprop="channelId" content="([^"]+)"', html)
                     if cid_m:
                         cid = cid_m.group(1)
                         rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}"
