@@ -25,7 +25,10 @@ class Settings:
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./kre8.db")
     
     # CORS
+    _cors_env = os.getenv("CORS_ORIGINS", "")
     CORS_ORIGINS: List[str] = [
+        orig.strip() for orig in _cors_env.split(",") if orig.strip()
+    ] if _cors_env else [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:4173",
