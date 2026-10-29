@@ -133,7 +133,7 @@ class VoiceService:
     async def synthesize_speech(cls, text: str, voice_id: str = "af_heart", format: str = "mp3") -> bytes:
         clean_text = clean_spoken_text(text)
         if not clean_text:
-            raise ValueError("No readable spoken dialogue found to synthesize.")
+            return b""
 
         lang, voice_param = resolve_voice_and_lang(voice_id)
         encoded_text = urllib.parse.quote(clean_text)
@@ -142,20 +142,25 @@ class VoiceService:
             endpoint += f"&voice={voice_param}"
 
         logger.info(f"Synthesizing voiceover via Nu-Voice: lang={lang}, voice={voice_param}, chars={len(clean_text)}")
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.get(endpoint)
-            if resp.status_code != 200:
-                raise RuntimeError(f"Nu-Voice error [{resp.status_code}]: {resp.text}")
-            audio_bytes = resp.content
-            if not audio_bytes:
-                raise RuntimeError("Nu-Voice returned empty audio payload.")
-            return audio_bytes
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                resp = await client.get(endpoint)
+                if resp.status_code != 200:
+                    raise RuntimeError(f"Nu-Voice error [{resp.status_code}]: {resp.text}")
+                audio_bytes = resp.content
+                if not audio_bytes:
+                    raise RuntimeError("Nu-Voice returned empty audio payload.")
+                return audio_bytes
+        except httpx.TimeoutException:
+            raise TimeoutError(f"Nu-Voice speech synthesis timed out for {len(clean_text)} characters.")
+        except httpx.ConnectError as ce:
+            raise ConnectionError(f"Could not connect to Nu-Voice at {NU_VOICE_URL}: {str(ce)}")
 
     @classmethod
     def synthesize_speech_sync(cls, text: str, voice_id: str = "af_heart", format: str = "mp3") -> bytes:
         clean_text = clean_spoken_text(text)
         if not clean_text:
-            raise ValueError("No readable spoken dialogue found to synthesize.")
+            return b""
 
         lang, voice_param = resolve_voice_and_lang(voice_id)
         encoded_text = urllib.parse.quote(clean_text)
@@ -164,14 +169,19 @@ class VoiceService:
             endpoint += f"&voice={voice_param}"
 
         logger.info(f"Sync synthesizing voiceover via Nu-Voice: lang={lang}, voice={voice_param}, chars={len(clean_text)}")
-        with httpx.Client(timeout=60.0) as client:
-            resp = client.get(endpoint)
-            if resp.status_code != 200:
-                raise RuntimeError(f"Nu-Voice error [{resp.status_code}]: {resp.text}")
-            audio_bytes = resp.content
-            if not audio_bytes:
-                raise RuntimeError("Nu-Voice returned empty audio payload.")
-            return audio_bytes
+        try:
+            with httpx.Client(timeout=120.0) as client:
+                resp = client.get(endpoint)
+                if resp.status_code != 200:
+                    raise RuntimeError(f"Nu-Voice error [{resp.status_code}]: {resp.text}")
+                audio_bytes = resp.content
+                if not audio_bytes:
+                    raise RuntimeError("Nu-Voice returned empty audio payload.")
+                return audio_bytes
+        except httpx.TimeoutException:
+            raise TimeoutError(f"Nu-Voice sync speech synthesis timed out for {len(clean_text)} characters.")
+        except httpx.ConnectError as ce:
+            raise ConnectionError(f"Could not connect to Nu-Voice at {NU_VOICE_URL}: {str(ce)}")
 
     @classmethod
     async def synthesize_scene_clip(
@@ -187,8 +197,9 @@ class VoiceService:
         filename = f"clip_{script_id}_{clip_id}.{format}"
         file_path = STORAGE_DIR / filename
 
-        with open(file_path, "wb") as f:
-            f.write(audio_bytes)
+        if audio_bytes:
+            with open(file_path, "wb") as f:
+                f.write(audio_bytes)
 
         duration = estimate_audio_duration(spoken_dialogue, len(audio_bytes))
         audio_url = f"/api/voice/audio/{filename}"
@@ -198,7 +209,8 @@ class VoiceService:
             "file_path": str(file_path),
             "audio_url": audio_url,
             "duration": duration,
-            "bytes_size": len(audio_bytes)
+            "bytes_size": len(audio_bytes),
+            "audio_bytes": audio_bytes
         }
 
     @classmethod
@@ -219,13 +231,15 @@ class VoiceService:
                 with open(cpath, "rb") as f:
                     combined_bytes.extend(f.read())
 
-        with open(master_path, "wb") as f:
-            f.write(combined_bytes)
+        if combined_bytes:
+            with open(master_path, "wb") as f:
+                f.write(combined_bytes)
 
         return {
             "master_filename": master_filename,
             "master_path": str(master_path),
             "master_audio_url": f"/api/voice/audio/{master_filename}",
-            "bytes_size": len(combined_bytes)
+            "bytes_size": len(combined_bytes),
+            "combined_bytes": bytes(combined_bytes)
         }
 

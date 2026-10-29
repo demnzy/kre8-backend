@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.api.auth import get_current_user
-from app.models.models import User, Script, ScriptClip
+from app.models.models import User, Script, ScriptClip, ScriptAudioCache
 from app.schemas.schemas import (
     VoiceOption,
     VoiceQuotaOut,
@@ -21,6 +21,62 @@ from app.schemas.schemas import (
 from app.services.voice_service import VoiceService, STORAGE_DIR
 
 router = APIRouter(prefix="/voice", tags=["Voice & TTS"])
+
+def get_audio_bytes_from_storage_or_db(filename: str, db: Session) -> Optional[bytes]:
+    """Retrieves audio bytes from disk cache or persistent DB cache (survives container restarts)."""
+    safe_filename = os.path.basename(filename)
+    file_path = STORAGE_DIR / safe_filename
+    if file_path.exists():
+        try:
+            with open(file_path, "rb") as f:
+                data = f.read()
+                if data:
+                    return data
+        except Exception:
+            pass
+
+    # Fallback to persistent database cache
+    try:
+        cached = db.query(ScriptAudioCache).filter(ScriptAudioCache.filename == safe_filename).first()
+        if cached and cached.audio_data:
+            # Re-seed ephemeral disk cache for fast FileResponse serving
+            try:
+                STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+                with open(file_path, "wb") as f:
+                    f.write(cached.audio_data)
+            except Exception:
+                pass
+            return cached.audio_data
+    except Exception as e:
+        pass
+
+    return None
+
+def save_audio_bytes(filename: str, data: bytes, db: Session):
+    """Saves audio bytes to both local disk and persistent database cache."""
+    if not data:
+        return
+    safe_filename = os.path.basename(filename)
+    file_path = STORAGE_DIR / safe_filename
+
+    # Save to disk
+    try:
+        STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(file_path, "wb") as f:
+            f.write(data)
+    except Exception:
+        pass
+
+    # Save to DB cache
+    try:
+        existing = db.query(ScriptAudioCache).filter(ScriptAudioCache.filename == safe_filename).first()
+        if existing:
+            existing.audio_data = data
+        else:
+            db.add(ScriptAudioCache(filename=safe_filename, audio_data=data))
+        db.commit()
+    except Exception:
+        db.rollback()
 
 @router.get("/quota", response_model=VoiceQuotaOut)
 def get_user_voice_quota(current_user: User = Depends(get_current_user)):
@@ -85,13 +141,15 @@ async def synthesize_scene_clip(
             voice_id=req.voice_id or "af_heart",
             format=req.format or "mp3"
         )
+        if result.get("audio_bytes"):
+            save_audio_bytes(result["filename"], result["audio_bytes"], db)
         clip.audio_url = result["audio_url"]
         clip.audio_duration = result["duration"]
         db.commit()
         db.refresh(clip)
         return clip
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Voice synthesis failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Voice synthesis failed: {str(e) or repr(e)}")
 
 @router.post("/scripts/{script_id}/synthesize-all", response_model=ScriptOut)
 async def synthesize_full_script_audio(
@@ -127,18 +185,23 @@ async def synthesize_full_script_audio(
     format = req.format or "mp3"
 
     try:
-        # Concurrent synthesis for fast execution without timeouts
+        # Limit concurrency to 2 to prevent overloading the voice engine on CPU
+        sem = asyncio.Semaphore(2)
+
         async def _synth_single_clip(clip_item):
             text = clip_item.spoken_dialogue or ""
             if not text.strip():
                 return None
-            res = await VoiceService.synthesize_scene_clip(
-                script_id=script_id,
-                clip_id=clip_item.id,
-                spoken_dialogue=text,
-                voice_id=voice_id,
-                format=format
-            )
+            async with sem:
+                res = await VoiceService.synthesize_scene_clip(
+                    script_id=script_id,
+                    clip_id=clip_item.id,
+                    spoken_dialogue=text,
+                    voice_id=voice_id,
+                    format=format
+                )
+            if res.get("audio_bytes"):
+                save_audio_bytes(res["filename"], res["audio_bytes"], db)
             clip_item.audio_url = res["audio_url"]
             clip_item.audio_duration = res["duration"]
             return res["filename"]
@@ -152,6 +215,8 @@ async def synthesize_full_script_audio(
                 clip_filenames=clip_filenames,
                 format=format
             )
+            if master_res.get("combined_bytes"):
+                save_audio_bytes(master_res["master_filename"], master_res["combined_bytes"], db)
             script.full_audio_url = master_res["master_audio_url"]
             script.voice_id = voice_id
 
@@ -163,20 +228,20 @@ async def synthesize_full_script_audio(
         db.refresh(script)
         return script
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Full script voiceover failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Full script voiceover failed: {str(e) or repr(e)}")
 
 @router.get("/audio/{filename}")
 async def serve_audio_file(filename: str, db: Session = Depends(get_db)):
-    """Streams audio file directly to browser <audio> elements with self-healing fallback."""
-    # Prevent directory traversal
+    """Streams audio file directly to browser <audio> elements with database cache fallback."""
     safe_filename = os.path.basename(filename)
-    file_path = STORAGE_DIR / safe_filename
     media_type = "audio/mpeg" if safe_filename.endswith(".mp3") else "audio/wav"
 
-    if file_path.exists():
-        return FileResponse(file_path, media_type=media_type, headers={"Accept-Ranges": "bytes"})
+    # 1. Fast path: check disk cache or persistent db cache
+    cached_bytes = get_audio_bytes_from_storage_or_db(safe_filename, db)
+    if cached_bytes:
+        return Response(content=cached_bytes, media_type=media_type, headers={"Accept-Ranges": "bytes"})
 
-    # Self-healing: if server restarted or container disk was recreated
+    # 2. Self-healing clip generation if not found in db or disk
     clip_match = re.match(r"^clip_(\d+)_(\d+)\.(mp3|wav)$", safe_filename)
     if clip_match:
         script_id = int(clip_match.group(1))
@@ -188,59 +253,49 @@ async def serve_audio_file(filename: str, db: Session = Depends(get_db)):
             lang = getattr(script, "voice_id", "en") or "en"
             try:
                 audio_bytes = await VoiceService.synthesize_speech(clip.spoken_dialogue, voice_id=lang, format=audio_format)
-                try:
-                    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-                    with open(file_path, "wb") as f:
-                        f.write(audio_bytes)
-                except Exception:
-                    pass
-                return Response(content=audio_bytes, media_type=media_type, headers={"Accept-Ranges": "bytes"})
+                if audio_bytes:
+                    save_audio_bytes(safe_filename, audio_bytes, db)
+                    return Response(content=audio_bytes, media_type=media_type, headers={"Accept-Ranges": "bytes"})
             except Exception as e:
-                raise HTTPException(status_code=500, detail=f"Audio regeneration failed: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Audio regeneration failed: {str(e) or repr(e)}")
 
+    # 3. Self-healing master audio merge
     master_match = re.match(r"^script_(\d+)_master\.(mp3|wav)$", safe_filename)
     if master_match:
         script_id = int(master_match.group(1))
         audio_format = master_match.group(2)
         script = db.query(Script).filter(Script.id == script_id).first()
         if script and script.clips:
-            # Check if all scene clips already exist on disk for instant assembly
-            all_on_disk = True
+            # Check if all scene clips exist in cache
+            all_found = True
             combined = bytearray()
             for c in script.clips:
                 if c.spoken_dialogue and c.spoken_dialogue.strip():
-                    c_path = STORAGE_DIR / f"clip_{script_id}_{c.id}.{audio_format}"
-                    if c_path.exists():
-                        with open(c_path, "rb") as f:
-                            combined.extend(f.read())
+                    c_data = get_audio_bytes_from_storage_or_db(f"clip_{script_id}_{c.id}.{audio_format}", db)
+                    if c_data:
+                        combined.extend(c_data)
                     else:
-                        all_on_disk = False
+                        all_found = False
                         break
-            if all_on_disk and combined:
-                try:
-                    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-                    with open(file_path, "wb") as f:
-                        f.write(combined)
-                except Exception:
-                    pass
+            if all_found and combined:
+                save_audio_bytes(safe_filename, bytes(combined), db)
                 return Response(content=bytes(combined), media_type=media_type, headers={"Accept-Ranges": "bytes"})
 
-            # Parallel fallback via asyncio.gather if clips are not on disk
+            # Fallback: synthesize missing clips with semaphore limit
             lang = getattr(script, "voice_id", "en") or "en"
+            sem = asyncio.Semaphore(2)
             try:
                 async def _get_clip_bytes(clip):
                     if not clip.spoken_dialogue or not clip.spoken_dialogue.strip():
                         return b""
-                    c_path = STORAGE_DIR / f"clip_{script_id}_{clip.id}.{audio_format}"
-                    if c_path.exists():
-                        with open(c_path, "rb") as f:
-                            return f.read()
-                    data = await VoiceService.synthesize_speech(clip.spoken_dialogue, voice_id=lang, format=audio_format)
-                    try:
-                        with open(c_path, "wb") as f:
-                            f.write(data)
-                    except Exception:
-                        pass
+                    c_name = f"clip_{script_id}_{clip.id}.{audio_format}"
+                    cached = get_audio_bytes_from_storage_or_db(c_name, db)
+                    if cached:
+                        return cached
+                    async with sem:
+                        data = await VoiceService.synthesize_speech(clip.spoken_dialogue, voice_id=lang, format=audio_format)
+                    if data:
+                        save_audio_bytes(c_name, data, db)
                     return data
 
                 clip_data_list = await asyncio.gather(*[_get_clip_bytes(c) for c in script.clips])
@@ -249,15 +304,10 @@ async def serve_audio_file(filename: str, db: Session = Depends(get_db)):
                     combined.extend(d)
 
                 if combined:
-                    try:
-                        STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-                        with open(file_path, "wb") as f:
-                            f.write(combined)
-                    except Exception:
-                        pass
+                    save_audio_bytes(safe_filename, bytes(combined), db)
                     return Response(content=bytes(combined), media_type=media_type, headers={"Accept-Ranges": "bytes"})
             except Exception as e:
-                raise HTTPException(status_code=500, detail=f"Master audio regeneration failed: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Master audio regeneration failed: {str(e) or repr(e)}")
 
     raise HTTPException(status_code=404, detail="Audio file not found")
 
@@ -280,67 +330,58 @@ async def download_master_audio(
     if script.full_audio_url and (script.full_audio_url.startswith("http://") or script.full_audio_url.startswith("https://")):
         return RedirectResponse(url=script.full_audio_url, status_code=307)
 
-    # 1. Check if master file exists on disk (.mp3 or .wav)
+    # 1. Check if master file exists in storage or persistent db cache (.mp3 or .wav)
     for ext, mtype in [("mp3", "audio/mpeg"), ("wav", "audio/wav")]:
-        file_path = STORAGE_DIR / f"script_{script_id}_master.{ext}"
-        if file_path.exists():
+        master_fname = f"script_{script_id}_master.{ext}"
+        master_bytes = get_audio_bytes_from_storage_or_db(master_fname, db)
+        if master_bytes:
             download_name = f"{safe_title}_voiceover.{ext}"
-            return FileResponse(
-                file_path,
+            return Response(
+                content=master_bytes,
                 media_type=mtype,
-                filename=download_name,
                 headers={"Content-Disposition": f'attachment; filename="{download_name}"'}
             )
 
-    # 2. Check if all scene clip files already exist on disk (instant merge without network delay)
+    # 2. Check if all scene clip files already exist in storage/DB (instant merge without network delay)
     if script.clips:
         for ext, mtype in [("mp3", "audio/mpeg"), ("wav", "audio/wav")]:
             assembled = bytearray()
             all_found = True
             for c in script.clips:
                 if c.spoken_dialogue and c.spoken_dialogue.strip():
-                    c_path = STORAGE_DIR / f"clip_{script_id}_{c.id}.{ext}"
-                    if c_path.exists():
-                        with open(c_path, "rb") as f:
-                            assembled.extend(f.read())
+                    c_bytes = get_audio_bytes_from_storage_or_db(f"clip_{script_id}_{c.id}.{ext}", db)
+                    if c_bytes:
+                        assembled.extend(c_bytes)
                     else:
                         all_found = False
                         break
             if all_found and assembled:
-                master_file = STORAGE_DIR / f"script_{script_id}_master.{ext}"
-                try:
-                    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-                    with open(master_file, "wb") as f:
-                        f.write(assembled)
-                except Exception:
-                    pass
+                master_fname = f"script_{script_id}_master.{ext}"
+                save_audio_bytes(master_fname, bytes(assembled), db)
                 download_name = f"{safe_title}_voiceover.{ext}"
-                return FileResponse(
-                    master_file,
+                return Response(
+                    content=bytes(assembled),
                     media_type=mtype,
-                    filename=download_name,
                     headers={"Content-Disposition": f'attachment; filename="{download_name}"'}
                 )
 
-        # 3. Concurrent synthesis fallback if clips need to be generated
+        # 3. Fallback: synthesize missing clips with Semaphore(2) concurrency control
         lang = getattr(script, "voice_id", "en") or "en"
         fmt = "mp3"
         mtype = "audio/mpeg"
+        sem = asyncio.Semaphore(2)
 
         async def _fetch_or_synth(clip):
             if not clip.spoken_dialogue or not clip.spoken_dialogue.strip():
                 return b""
-            c_path = STORAGE_DIR / f"clip_{script_id}_{clip.id}.{fmt}"
-            if c_path.exists():
-                with open(c_path, "rb") as f:
-                    return f.read()
-            audio_bytes = await VoiceService.synthesize_speech(clip.spoken_dialogue, voice_id=lang, format=fmt)
-            try:
-                STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-                with open(c_path, "wb") as f:
-                    f.write(audio_bytes)
-            except Exception:
-                pass
+            c_name = f"clip_{script_id}_{clip.id}.{fmt}"
+            cached = get_audio_bytes_from_storage_or_db(c_name, db)
+            if cached:
+                return cached
+            async with sem:
+                audio_bytes = await VoiceService.synthesize_speech(clip.spoken_dialogue, voice_id=lang, format=fmt)
+            if audio_bytes:
+                save_audio_bytes(c_name, audio_bytes, db)
             return audio_bytes
 
         try:
@@ -350,13 +391,8 @@ async def download_master_audio(
                 combined.extend(r)
 
             if combined:
-                master_file = STORAGE_DIR / f"script_{script_id}_master.{fmt}"
-                try:
-                    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-                    with open(master_file, "wb") as f:
-                        f.write(combined)
-                except Exception:
-                    pass
+                master_fname = f"script_{script_id}_master.{fmt}"
+                save_audio_bytes(master_fname, bytes(combined), db)
                 download_name = f"{safe_title}_voiceover.{fmt}"
                 return Response(
                     content=bytes(combined),
@@ -364,7 +400,8 @@ async def download_master_audio(
                     headers={"Content-Disposition": f'attachment; filename="{download_name}"'}
                 )
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Audio download generation failed: {str(e)}")
+            err_msg = str(e) or repr(e)
+            raise HTTPException(status_code=500, detail=f"Audio download generation failed: {err_msg}")
 
     raise HTTPException(status_code=404, detail="Master audio not generated yet")
 

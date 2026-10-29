@@ -1,6 +1,6 @@
 from datetime import datetime
 from sqlalchemy import (
-    Column, Integer, String, Text, Boolean, DateTime, Float, ForeignKey, JSON
+    Column, Integer, String, Text, Boolean, DateTime, Float, ForeignKey, JSON, LargeBinary
 )
 from sqlalchemy.orm import relationship
 from app.core.database import Base
@@ -320,3 +320,12 @@ class CreatorWatchlist(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     
     user = relationship("User", back_populates="watchlist")
+
+class ScriptAudioCache(Base):
+    __tablename__ = "script_audio_cache"
+
+    id = Column(Integer, primary_key=True, index=True)
+    filename = Column(String(255), unique=True, index=True, nullable=False)
+    audio_data = Column(LargeBinary, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
