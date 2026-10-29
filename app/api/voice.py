@@ -2,7 +2,7 @@ import os
 import re
 from pathlib import Path
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -162,15 +162,63 @@ async def synthesize_full_script_audio(
         raise HTTPException(status_code=500, detail=f"Full script voiceover failed: {str(e)}")
 
 @router.get("/audio/{filename}")
-def serve_audio_file(filename: str):
-    """Streams audio file directly to browser <audio> elements."""
+def serve_audio_file(filename: str, db: Session = Depends(get_db)):
+    """Streams audio file directly to browser <audio> elements with self-healing fallback."""
     # Prevent directory traversal
     safe_filename = os.path.basename(filename)
     file_path = STORAGE_DIR / safe_filename
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Audio file not found")
     media_type = "audio/mpeg" if safe_filename.endswith(".mp3") else "audio/wav"
-    return FileResponse(file_path, media_type=media_type)
+
+    if file_path.exists():
+        return FileResponse(file_path, media_type=media_type, headers={"Accept-Ranges": "bytes"})
+
+    # Self-healing: if server restarted or container disk was recreated
+    clip_match = re.match(r"^clip_(\d+)_(\d+)\.(mp3|wav)$", safe_filename)
+    if clip_match:
+        script_id = int(clip_match.group(1))
+        clip_id = int(clip_match.group(2))
+        audio_format = clip_match.group(3)
+        clip = db.query(ScriptClip).filter(ScriptClip.id == clip_id).first()
+        if clip and clip.spoken_dialogue:
+            script = db.query(Script).filter(Script.id == script_id).first()
+            lang = getattr(script, "voice_id", "en") or "en"
+            try:
+                audio_bytes = VoiceService.synthesize_speech_sync(clip.spoken_dialogue, lang=lang, format=audio_format)
+                try:
+                    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+                    with open(file_path, "wb") as f:
+                        f.write(audio_bytes)
+                except Exception:
+                    pass
+                return Response(content=audio_bytes, media_type=media_type, headers={"Accept-Ranges": "bytes"})
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Audio regeneration failed: {str(e)}")
+
+    master_match = re.match(r"^script_(\d+)_master\.(mp3|wav)$", safe_filename)
+    if master_match:
+        script_id = int(master_match.group(1))
+        audio_format = master_match.group(2)
+        script = db.query(Script).filter(Script.id == script_id).first()
+        if script and script.clips:
+            lang = getattr(script, "voice_id", "en") or "en"
+            try:
+                combined = bytearray()
+                for c in script.clips:
+                    if c.spoken_dialogue and c.spoken_dialogue.strip():
+                        c_bytes = VoiceService.synthesize_speech_sync(c.spoken_dialogue, lang=lang, format=audio_format)
+                        combined.extend(c_bytes)
+                if combined:
+                    try:
+                        STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+                        with open(file_path, "wb") as f:
+                            f.write(combined)
+                    except Exception:
+                        pass
+                    return Response(content=bytes(combined), media_type=media_type, headers={"Accept-Ranges": "bytes"})
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Master audio regeneration failed: {str(e)}")
+
+    raise HTTPException(status_code=404, detail="Audio file not found")
 
 @router.get("/scripts/{script_id}/download-master")
 def download_master_audio(
@@ -184,21 +232,43 @@ def download_master_audio(
         Script.user_id == current_user.id
     ).first()
 
-    if not script or not script.full_audio_url:
-        raise HTTPException(status_code=404, detail="Master audio not generated yet")
-
-    filename = os.path.basename(script.full_audio_url)
-    file_path = STORAGE_DIR / filename
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Audio file missing from storage")
+    if not script:
+        raise HTTPException(status_code=404, detail="Script not found")
 
     safe_title = re.sub(r"[^a-zA-Z0-9_\- ]", "", script.title).replace(" ", "_")
     download_filename = f"{safe_title}_voiceover.mp3"
 
-    return FileResponse(
-        file_path,
-        media_type="audio/mpeg",
-        filename=download_filename,
-        headers={"Content-Disposition": f'attachment; filename="{download_filename}"'}
-    )
+    filename = f"script_{script_id}_master.mp3"
+    file_path = STORAGE_DIR / filename
+
+    if file_path.exists():
+        return FileResponse(
+            file_path,
+            media_type="audio/mpeg",
+            filename=download_filename,
+            headers={"Content-Disposition": f'attachment; filename="{download_filename}"'}
+        )
+
+    # Regenerate master audio if file was removed from disk
+    if script.clips:
+        lang = getattr(script, "voice_id", "en") or "en"
+        combined = bytearray()
+        for c in script.clips:
+            if c.spoken_dialogue and c.spoken_dialogue.strip():
+                c_bytes = VoiceService.synthesize_speech_sync(c.spoken_dialogue, lang=lang, format="mp3")
+                combined.extend(c_bytes)
+        if combined:
+            try:
+                STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+                with open(file_path, "wb") as f:
+                    f.write(combined)
+            except Exception:
+                pass
+            return Response(
+                content=bytes(combined),
+                media_type="audio/mpeg",
+                headers={"Content-Disposition": f'attachment; filename="{download_filename}"'}
+            )
+
+    raise HTTPException(status_code=404, detail="Master audio not generated yet")
 

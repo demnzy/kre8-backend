@@ -91,6 +91,25 @@ class VoiceService:
             return audio_bytes
 
     @classmethod
+    def synthesize_speech_sync(cls, text: str, lang: str = "en", format: str = "mp3") -> bytes:
+        clean_text = clean_spoken_text(text)
+        if not clean_text:
+            raise ValueError("No readable spoken dialogue found to synthesize.")
+
+        encoded_text = urllib.parse.quote(clean_text)
+        endpoint = f"{NU_VOICE_URL}/v1/tts/stream?text={encoded_text}&lang={lang}&format={format}"
+
+        logger.info(f"Sync synthesizing voiceover via Nu-Voice: lang={lang}, chars={len(clean_text)}")
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.get(endpoint)
+            if resp.status_code != 200:
+                raise RuntimeError(f"Nu-Voice error [{resp.status_code}]: {resp.text}")
+            audio_bytes = resp.content
+            if not audio_bytes:
+                raise RuntimeError("Nu-Voice returned empty audio payload.")
+            return audio_bytes
+
+    @classmethod
     async def synthesize_scene_clip(
         cls,
         script_id: int,
@@ -145,3 +164,4 @@ class VoiceService:
             "master_audio_url": f"/api/voice/audio/{master_filename}",
             "bytes_size": len(combined_bytes)
         }
+
