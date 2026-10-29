@@ -27,8 +27,12 @@ def resolve_db_url(raw: str | None) -> str:
     if not url:
         return "sqlite:///./kre8.db"
 
-    # Normalize dialect prefix for SQLAlchemy
-    if url.startswith("postgres://"):
+    # Normalize dialect prefix for SQLAlchemy (and handle accidentally omitted 'postgresql:' scheme)
+    if url.startswith("//"):
+        url = "postgresql+psycopg2:" + url
+    elif url.startswith("postgres.") or url.startswith("postgres:"):
+        url = "postgresql+psycopg2://" + url
+    elif url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql+psycopg2://", 1)
     elif url.startswith("postgresql://") and not url.startswith("postgresql+"):
         url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
@@ -48,6 +52,10 @@ else:
 
 try:
     engine = create_engine(db_url, **engine_kwargs)
+    if not is_sqlite:
+        masked = re.sub(r':([^:@]+)@', ':****@', db_url)
+        logger.info(f"[Database] Engine successfully initialized for PostgreSQL ({masked})")
+except Exception as e:
 except Exception as e:
     masked = re.sub(r':([^:@]+)@', ':****@', db_url)
     logger.error(f"[Database] Failed to initialize engine with URL '{masked}': {e}. Falling back to SQLite.")
