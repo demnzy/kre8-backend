@@ -227,14 +227,10 @@ def serve_audio_file(filename: str, db: Session = Depends(get_db)):
 @router.get("/scripts/{script_id}/download-master")
 def download_master_audio(
     script_id: int,
-    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Direct one-click download for master script audio."""
-    script = db.query(Script).filter(
-        Script.id == script_id,
-        Script.user_id == current_user.id
-    ).first()
+    script = db.query(Script).filter(Script.id == script_id).first()
 
     if not script:
         raise HTTPException(status_code=404, detail="Script not found")
