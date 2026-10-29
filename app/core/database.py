@@ -56,7 +56,6 @@ try:
         masked = re.sub(r':([^:@]+)@', ':****@', db_url)
         logger.info(f"[Database] Engine successfully initialized for PostgreSQL ({masked})")
 except Exception as e:
-except Exception as e:
     masked = re.sub(r':([^:@]+)@', ':****@', db_url)
     logger.error(f"[Database] Failed to initialize engine with URL '{masked}': {e}. Falling back to SQLite.")
     db_url = "sqlite:///./kre8.db"
