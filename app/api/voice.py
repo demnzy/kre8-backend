@@ -145,11 +145,64 @@ async def synthesize_scene_clip(
             save_audio_bytes(result["filename"], result["audio_bytes"], db)
         clip.audio_url = result["audio_url"]
         clip.audio_duration = result["duration"]
+
+        if not is_unlimited:
+            current_user.voiceover_generations_used = used + 1
+
         db.commit()
         db.refresh(clip)
         return clip
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Voice synthesis failed: {str(e) or repr(e)}")
+
+@router.get("/scripts/{script_id}/clips/{clip_id}/download")
+def download_scene_clip_audio(
+    script_id: int,
+    clip_id: int,
+    db: Session = Depends(get_db)
+):
+    """Direct one-click download for an individual scene audio clip."""
+    clip = db.query(ScriptClip).filter(
+        ScriptClip.id == clip_id,
+        ScriptClip.script_id == script_id
+    ).first()
+
+    if not clip:
+        raise HTTPException(status_code=404, detail="Scene clip not found")
+
+    script = db.query(Script).filter(Script.id == script_id).first()
+    safe_title = re.sub(r"[^a-zA-Z0-9_\- ]", "", script.title if script else "script").replace(" ", "_")
+    download_filename = f"{safe_title}_scene_{clip.clip_number}.mp3"
+
+    filename = f"clip_{script_id}_{clip_id}.mp3"
+    audio_data = get_audio_bytes_from_storage_or_db(filename, db)
+
+    if not audio_data:
+        # Check wav if mp3 wasn't found
+        filename_wav = f"clip_{script_id}_{clip_id}.wav"
+        audio_data = get_audio_bytes_from_storage_or_db(filename_wav, db)
+        if audio_data:
+            download_filename = f"{safe_title}_scene_{clip.clip_number}.wav"
+
+    if not audio_data:
+        # If not cached yet, synthesize on demand
+        text_to_speak = clip.spoken_dialogue or ""
+        if not text_to_speak.strip():
+            raise HTTPException(status_code=400, detail="Scene has no spoken dialogue to download.")
+        lang = getattr(script, "voice_id", "en") or "en"
+        try:
+            audio_data = VoiceService.synthesize_speech_sync(text_to_speak, voice_id=lang, format="mp3")
+            if audio_data:
+                save_audio_bytes(filename, audio_data, db)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Scene audio generation failed: {str(e) or repr(e)}")
+
+    media_type = "audio/mpeg" if download_filename.endswith(".mp3") else "audio/wav"
+    return Response(
+        content=audio_data,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{download_filename}"'}
+    )
 
 @router.post("/scripts/{script_id}/synthesize-all", response_model=ScriptOut)
 async def synthesize_full_script_audio(
