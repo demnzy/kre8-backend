@@ -16,33 +16,91 @@ NU_VOICE_URL = os.getenv("NU_VOICE_URL", "https://voice.nu-age.name.ng").rstrip(
 
 AVAILABLE_VOICES = [
     {
-        "id": "en",
-        "name": "English (Studio Kokoro)",
+        "id": "af_heart",
+        "name": "Heart (Natural & Warm)",
         "language": "en",
         "language_name": "English",
-        "gender": "Natural",
+        "gender": "Female",
+        "engine": "Kokoro-82M",
+        "sample_rate": 24000
+    },
+    {
+        "id": "am_adam",
+        "name": "Adam (Deep & Confident)",
+        "language": "en",
+        "language_name": "English",
+        "gender": "Male",
+        "engine": "Kokoro-82M",
+        "sample_rate": 24000
+    },
+    {
+        "id": "af_bella",
+        "name": "Bella (Expressive & Dynamic)",
+        "language": "en",
+        "language_name": "English",
+        "gender": "Female",
+        "engine": "Kokoro-82M",
+        "sample_rate": 24000
+    },
+    {
+        "id": "am_michael",
+        "name": "Michael (Authoritative & Smooth)",
+        "language": "en",
+        "language_name": "English",
+        "gender": "Male",
+        "engine": "Kokoro-82M",
+        "sample_rate": 24000
+    },
+    {
+        "id": "bf_alice",
+        "name": "Alice (British Conversational)",
+        "language": "en",
+        "language_name": "English (UK)",
+        "gender": "Female",
+        "engine": "Kokoro-82M",
+        "sample_rate": 24000
+    },
+    {
+        "id": "bm_george",
+        "name": "George (British Storyteller)",
+        "language": "en",
+        "language_name": "English (UK)",
+        "gender": "Male",
         "engine": "Kokoro-82M",
         "sample_rate": 24000
     },
     {
         "id": "ha",
-        "name": "Hausa (Meta MMS)",
+        "name": "Amina (Hausa Natural)",
         "language": "ha",
         "language_name": "Hausa",
-        "gender": "Natural",
+        "gender": "Female",
         "engine": "Meta MMS",
         "sample_rate": 16000
     },
     {
         "id": "fr",
-        "name": "French (Meta MMS)",
+        "name": "Camille (French Natural)",
         "language": "fr",
         "language_name": "French",
-        "gender": "Natural",
+        "gender": "Female",
         "engine": "Meta MMS",
         "sample_rate": 16000
     }
 ]
+
+def resolve_voice_and_lang(voice_id: str | None) -> tuple[str, str | None]:
+    """Resolves language code and optional voice persona for Nu-Voice."""
+    if not voice_id:
+        return "en", "af_heart"
+    v = voice_id.lower().strip()
+    if v in ("ha", "hausa"):
+        return "ha", None
+    if v in ("fr", "french"):
+        return "fr", None
+    if v in ("en", "english"):
+        return "en", "af_heart"
+    return "en", v
 
 def clean_spoken_text(text: str) -> str:
     """Removes director cues, bracket tags, and markdown markup for clean human speech."""
@@ -72,16 +130,19 @@ class VoiceService:
         return AVAILABLE_VOICES
 
     @classmethod
-    async def synthesize_speech(cls, text: str, lang: str = "en", format: str = "mp3") -> bytes:
+    async def synthesize_speech(cls, text: str, voice_id: str = "af_heart", format: str = "mp3") -> bytes:
         clean_text = clean_spoken_text(text)
         if not clean_text:
             raise ValueError("No readable spoken dialogue found to synthesize.")
 
+        lang, voice_param = resolve_voice_and_lang(voice_id)
         encoded_text = urllib.parse.quote(clean_text)
         endpoint = f"{NU_VOICE_URL}/v1/tts/stream?text={encoded_text}&lang={lang}&format={format}"
+        if voice_param:
+            endpoint += f"&voice={voice_param}"
 
-        logger.info(f"Synthesizing voiceover via Nu-Voice: lang={lang}, chars={len(clean_text)}")
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        logger.info(f"Synthesizing voiceover via Nu-Voice: lang={lang}, voice={voice_param}, chars={len(clean_text)}")
+        async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.get(endpoint)
             if resp.status_code != 200:
                 raise RuntimeError(f"Nu-Voice error [{resp.status_code}]: {resp.text}")
@@ -91,16 +152,19 @@ class VoiceService:
             return audio_bytes
 
     @classmethod
-    def synthesize_speech_sync(cls, text: str, lang: str = "en", format: str = "mp3") -> bytes:
+    def synthesize_speech_sync(cls, text: str, voice_id: str = "af_heart", format: str = "mp3") -> bytes:
         clean_text = clean_spoken_text(text)
         if not clean_text:
             raise ValueError("No readable spoken dialogue found to synthesize.")
 
+        lang, voice_param = resolve_voice_and_lang(voice_id)
         encoded_text = urllib.parse.quote(clean_text)
         endpoint = f"{NU_VOICE_URL}/v1/tts/stream?text={encoded_text}&lang={lang}&format={format}"
+        if voice_param:
+            endpoint += f"&voice={voice_param}"
 
-        logger.info(f"Sync synthesizing voiceover via Nu-Voice: lang={lang}, chars={len(clean_text)}")
-        with httpx.Client(timeout=30.0) as client:
+        logger.info(f"Sync synthesizing voiceover via Nu-Voice: lang={lang}, voice={voice_param}, chars={len(clean_text)}")
+        with httpx.Client(timeout=60.0) as client:
             resp = client.get(endpoint)
             if resp.status_code != 200:
                 raise RuntimeError(f"Nu-Voice error [{resp.status_code}]: {resp.text}")
@@ -115,11 +179,11 @@ class VoiceService:
         script_id: int,
         clip_id: int,
         spoken_dialogue: str,
-        lang: str = "en",
+        voice_id: str = "af_heart",
         format: str = "mp3"
     ) -> Dict[str, Any]:
         """Synthesizes audio for a single scene clip and persists it in local storage."""
-        audio_bytes = await cls.synthesize_speech(spoken_dialogue, lang=lang, format=format)
+        audio_bytes = await cls.synthesize_speech(spoken_dialogue, voice_id=voice_id, format=format)
         filename = f"clip_{script_id}_{clip_id}.{format}"
         file_path = STORAGE_DIR / filename
 

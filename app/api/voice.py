@@ -1,5 +1,6 @@
 import os
 import re
+import asyncio
 from pathlib import Path
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -81,7 +82,7 @@ async def synthesize_scene_clip(
             script_id=script_id,
             clip_id=clip.id,
             spoken_dialogue=text_to_speak,
-            lang=req.voice_id or "en",
+            voice_id=req.voice_id or "af_heart",
             format=req.format or "mp3"
         )
         clip.audio_url = result["audio_url"]
@@ -99,7 +100,7 @@ async def synthesize_full_script_audio(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Synthesizes voiceovers for every scene clip in the script, stitches master audio, and enforces free quota."""
+    """Synthesizes voiceovers concurrently across all script scenes, stitches master audio, and enforces free quota."""
     script = db.query(Script).filter(
         Script.id == script_id,
         Script.user_id == current_user.id
@@ -122,25 +123,28 @@ async def synthesize_full_script_audio(
             detail=f"Free voiceover limit reached ({limit}/{limit}). Upgrade to Creator Pro for unlimited studio voiceovers."
         )
 
-    clip_filenames = []
-    lang = req.voice_id or script.voice_id or "en"
+    voice_id = req.voice_id or script.voice_id or "af_heart"
     format = req.format or "mp3"
 
     try:
-        for clip in script.clips:
-            text = clip.spoken_dialogue or ""
+        # Concurrent synthesis for fast execution without timeouts
+        async def _synth_single_clip(clip_item):
+            text = clip_item.spoken_dialogue or ""
             if not text.strip():
-                continue
+                return None
             res = await VoiceService.synthesize_scene_clip(
                 script_id=script_id,
-                clip_id=clip.id,
+                clip_id=clip_item.id,
                 spoken_dialogue=text,
-                lang=lang,
+                voice_id=voice_id,
                 format=format
             )
-            clip.audio_url = res["audio_url"]
-            clip.audio_duration = res["duration"]
-            clip_filenames.append(res["filename"])
+            clip_item.audio_url = res["audio_url"]
+            clip_item.audio_duration = res["duration"]
+            return res["filename"]
+
+        results = await asyncio.gather(*[_synth_single_clip(c) for c in script.clips])
+        clip_filenames = [fn for fn in results if fn]
 
         if clip_filenames:
             master_res = await VoiceService.merge_script_clips(
@@ -149,7 +153,7 @@ async def synthesize_full_script_audio(
                 format=format
             )
             script.full_audio_url = master_res["master_audio_url"]
-            script.voice_id = lang
+            script.voice_id = voice_id
 
         # Decrement free quota (increment used count by 1 per full script voiceover)
         if not is_unlimited:
@@ -183,7 +187,7 @@ def serve_audio_file(filename: str, db: Session = Depends(get_db)):
             script = db.query(Script).filter(Script.id == script_id).first()
             lang = getattr(script, "voice_id", "en") or "en"
             try:
-                audio_bytes = VoiceService.synthesize_speech_sync(clip.spoken_dialogue, lang=lang, format=audio_format)
+                audio_bytes = VoiceService.synthesize_speech_sync(clip.spoken_dialogue, voice_id=lang, format=audio_format)
                 try:
                     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
                     with open(file_path, "wb") as f:
@@ -205,7 +209,7 @@ def serve_audio_file(filename: str, db: Session = Depends(get_db)):
                 combined = bytearray()
                 for c in script.clips:
                     if c.spoken_dialogue and c.spoken_dialogue.strip():
-                        c_bytes = VoiceService.synthesize_speech_sync(c.spoken_dialogue, lang=lang, format=audio_format)
+                        c_bytes = VoiceService.synthesize_speech_sync(c.spoken_dialogue, voice_id=lang, format=audio_format)
                         combined.extend(c_bytes)
                 if combined:
                     try:
@@ -255,7 +259,7 @@ def download_master_audio(
         combined = bytearray()
         for c in script.clips:
             if c.spoken_dialogue and c.spoken_dialogue.strip():
-                c_bytes = VoiceService.synthesize_speech_sync(c.spoken_dialogue, lang=lang, format="mp3")
+                c_bytes = VoiceService.synthesize_speech_sync(c.spoken_dialogue, voice_id=lang, format="mp3")
                 combined.extend(c_bytes)
         if combined:
             try:
