@@ -11,8 +11,12 @@ logger = logging.getLogger("kre8")
 import app.models.models
 
 # Create tables and ensure columns exist
-Base.metadata.create_all(bind=engine)
-ensure_database_schema(engine)
+try:
+    Base.metadata.create_all(bind=engine)
+    ensure_database_schema(engine)
+    logger.info("[Database] Schema synchronized successfully.")
+except Exception as e:
+    logger.warning("[Database] Initial schema synchronization warning (will retry on requests): %s", e)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,

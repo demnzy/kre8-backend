@@ -1,3 +1,4 @@
+import re
 import logging
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -5,25 +6,36 @@ from app.core.config import settings
 
 logger = logging.getLogger("kre8.db")
 
-# Normalize postgres:// or postgresql:// to ensure compatibility across SQLAlchemy drivers
-raw_url = (settings.DATABASE_URL or "sqlite:///./kre8.db").strip()
+def resolve_db_url(raw: str | None) -> str:
+    """Sanitize and normalize database connection string from environment."""
+    if not raw or not str(raw).strip():
+        logger.info("[Database] No DATABASE_URL provided. Falling back to local SQLite.")
+        return "sqlite:///./kre8.db"
 
-# Strip any surrounding quotes or accidental 'DATABASE_URL=' prefix from Coolify/PaaS UI
-while (raw_url.startswith('"') and raw_url.endswith('"')) or (raw_url.startswith("'") and raw_url.endswith("'")):
-    raw_url = raw_url[1:-1].strip()
+    url = str(raw).strip()
 
-if raw_url.startswith("DATABASE_URL="):
-    raw_url = raw_url.split("DATABASE_URL=", 1)[1].strip()
-    while (raw_url.startswith('"') and raw_url.endswith('"')) or (raw_url.startswith("'") and raw_url.endswith("'")):
-        raw_url = raw_url[1:-1].strip()
+    # Strip surrounding quotes or escaped quotes
+    while (url.startswith('"') and url.endswith('"')) or (url.startswith("'") and url.endswith("'")):
+        url = url[1:-1].strip()
 
-if raw_url.startswith("postgres://"):
-    db_url = raw_url.replace("postgres://", "postgresql+psycopg2://", 1)
-elif raw_url.startswith("postgresql://") and not raw_url.startswith("postgresql+"):
-    db_url = raw_url.replace("postgresql://", "postgresql+psycopg2://", 1)
-else:
-    db_url = raw_url
+    # Strip accidental 'DATABASE_URL=' prefix from PaaS UI copies
+    if url.startswith("DATABASE_URL="):
+        url = url.split("DATABASE_URL=", 1)[1].strip()
+        while (url.startswith('"') and url.endswith('"')) or (url.startswith("'") and url.endswith("'")):
+            url = url[1:-1].strip()
 
+    if not url:
+        return "sqlite:///./kre8.db"
+
+    # Normalize dialect prefix for SQLAlchemy
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+psycopg2://", 1)
+    elif url.startswith("postgresql://") and not url.startswith("postgresql+"):
+        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
+
+    return url
+
+db_url = resolve_db_url(settings.DATABASE_URL)
 is_sqlite = "sqlite" in db_url
 
 engine_kwargs = {}
@@ -34,7 +46,14 @@ else:
     engine_kwargs["pool_pre_ping"] = True
     engine_kwargs["pool_recycle"] = 300
 
-engine = create_engine(db_url, **engine_kwargs)
+try:
+    engine = create_engine(db_url, **engine_kwargs)
+except Exception as e:
+    masked = re.sub(r':([^:@]+)@', ':****@', db_url)
+    logger.error(f"[Database] Failed to initialize engine with URL '{masked}': {e}. Falling back to SQLite.")
+    db_url = "sqlite:///./kre8.db"
+    is_sqlite = True
+    engine = create_engine(db_url, connect_args={"check_same_thread": False})
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
