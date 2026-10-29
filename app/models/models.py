@@ -49,6 +49,7 @@ class UserPreferences(Base):
     openrouter_api_key = Column(String(255), nullable=True)
     deepseek_api_key = Column(String(255), nullable=True)
     news_api_key = Column(String(255), nullable=True)
+    news_region = Column(String(50), default="GLOBAL")
     
     # OAuth client IDs & secrets for social platforms
     youtube_client_id = Column(String(255), nullable=True)
@@ -71,6 +72,8 @@ class NewsArticle(Base):
     id = Column(Integer, primary_key=True, index=True)
     niche = Column(String(100), index=True)
     sub_niche = Column(String(100), index=True)
+    region = Column(String(50), default="GLOBAL", index=True)
+    category = Column(String(50), default="general", index=True)
     headline = Column(String(500), nullable=False)
     summary = Column(Text, nullable=True)
     source_name = Column(String(150), nullable=True)

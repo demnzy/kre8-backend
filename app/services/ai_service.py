@@ -398,7 +398,8 @@ class AIService:
         articles: List[NewsArticle],
         creator: Optional[Any] = None,
         prefs: Optional[UserPreferences] = None,
-        force_regenerate: bool = False
+        force_regenerate: bool = False,
+        region: str = "GLOBAL"
     ) -> List[NewsAIIdea]:
         """Synthesize daily news stories into actionable creator ideas, angles, and hooks using the user's configured provider."""
         self._require_user_key(prefs=prefs)
@@ -441,9 +442,14 @@ CRITICAL: The generated topic angles and viral hooks MUST heavily reflect this c
 
         async def _angle_for(article: NewsArticle) -> Optional[Dict[str, Any]]:
             nonlocal last_error
+            art_reg = getattr(article, "region", region) or region
+            reg_note = ""
+            if art_reg and art_reg != "GLOBAL":
+                reg_note = f"\nGeographic & Regional Market Context: {art_reg}. Anchor angles and viral hooks in relevant regional perspectives, local market dynamics, and audience impact for {art_reg}."
+
             prompt = f"""You are an elite content strategist for a digital creator in '{niche}' and '{sub_niche}'.
 Target audience: {audience}
-Tone: {tone}
+Tone: {tone}{reg_note}
 {creator_voice_instruction}
 HEADLINE: {article.headline}
 SOURCE: {article.source_name}

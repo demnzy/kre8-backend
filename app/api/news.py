@@ -3,26 +3,45 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.models.models import User, UserPreferences, NewsArticle, NewsAIIdea, ContentIdea, CreatorWatchlist
-from app.schemas.schemas import NewsArticleOut, NewsAIIdeaOut, ContentIdeaOut
+from app.schemas.schemas import NewsArticleOut, NewsAIIdeaOut, ContentIdeaOut, NewsRegionOut
 from app.core.config import settings
-from app.services.news_service import news_service
+from app.services.news_service import news_service, REGION_CONFIG
 from app.services.ai_service import ai_service
 from app.api.auth import get_current_user
 
 router = APIRouter(prefix="/news", tags=["news"])
 
+@router.get("/regions", response_model=List[NewsRegionOut])
+def get_news_regions():
+    """List all supported geographic news regions with flags and descriptions."""
+    return [
+        NewsRegionOut(
+            code=r["code"],
+            label=r["label"],
+            flag=r["flag"],
+            description=r.get("description")
+        )
+        for r in REGION_CONFIG.values()
+    ]
+
 @router.get("/daily", response_model=List[NewsArticleOut])
 async def get_daily_news(
+    region: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
     force_refresh: bool = Query(False),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Fetch daily latest news matching creator's Niche and Sub-Niche."""
+    """Fetch daily latest news matching creator's Niche, Sub-Niche, and chosen Region."""
     prefs = db.query(UserPreferences).filter(UserPreferences.user_id == current_user.id).first()
     niche = prefs.primary_niche if prefs and prefs.primary_niche else "Technology"
     sub_niche = prefs.sub_niche if prefs and prefs.sub_niche else "Artificial Intelligence & Agents"
     keywords = prefs.search_keywords if prefs else ""
     active_key = (prefs.news_api_key if prefs and prefs.news_api_key else None) or getattr(settings, "NEWS_API_KEY", "")
+
+    # Selected region or fall back to user preference, default to GLOBAL
+    active_region = (region or (prefs.news_region if prefs and prefs.news_region else "GLOBAL")).upper()
 
     try:
         articles = await news_service.get_or_refresh_daily_news(
@@ -31,25 +50,36 @@ async def get_daily_news(
             sub_niche=sub_niche,
             keywords=keywords,
             force_refresh=force_refresh,
-            api_key=active_key
+            api_key=active_key,
+            region=active_region,
+            category=category
         )
     except Exception as e:
         # Live fetch failed: serve the most recent cached articles instead of erroring
         print(f"[News] Live fetch failed, serving cache: {e}")
         db.rollback()
-        articles = (
-            db.query(NewsArticle)
-            .filter(NewsArticle.niche == niche, NewsArticle.sub_niche == sub_niche)
-            .order_by(NewsArticle.id.desc())
-            .limit(20)
-            .all()
-        )
+        query = db.query(NewsArticle).filter(NewsArticle.niche == niche, NewsArticle.sub_niche == sub_niche)
+        if active_region != "ALL":
+            query = query.filter(NewsArticle.region == active_region)
+        if category and category != "all":
+            query = query.filter(NewsArticle.category == category)
+        articles = query.order_by(NewsArticle.id.desc()).limit(20).all()
+
+    # Optional in-memory search filter if search parameter was passed
+    if search and search.strip():
+        q_lower = search.strip().lower()
+        articles = [
+            a for a in articles
+            if q_lower in a.headline.lower() or (a.summary and q_lower in a.summary.lower())
+        ]
+
     return articles
 
 @router.post("/synthesize", response_model=List[NewsAIIdeaOut])
 async def synthesize_news_to_ideas(
     article_id: Optional[int] = Query(None),
     creator_id: Optional[int] = Query(None),
+    region: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -57,6 +87,7 @@ async def synthesize_news_to_ideas(
     prefs = db.query(UserPreferences).filter(UserPreferences.user_id == current_user.id).first()
     niche = prefs.primary_niche if prefs and prefs.primary_niche else "Technology"
     sub_niche = prefs.sub_niche if prefs and prefs.sub_niche else "Artificial Intelligence & Agents"
+    active_region = (region or (prefs.news_region if prefs and prefs.news_region else "GLOBAL")).upper()
 
     creator = None
     if creator_id:
@@ -71,15 +102,22 @@ async def synthesize_news_to_ideas(
             raise HTTPException(status_code=404, detail="News article not found")
         articles = [target]
     else:
-        articles = db.query(NewsArticle).filter(
+        query = db.query(NewsArticle).filter(
             NewsArticle.niche == niche,
             NewsArticle.sub_niche == sub_niche
-        ).order_by(NewsArticle.id.desc()).limit(5).all()
+        )
+        if active_region != "ALL":
+            query = query.filter(NewsArticle.region == active_region)
+        articles = query.order_by(NewsArticle.id.desc()).limit(5).all()
 
         if not articles:
             # Fetch fresh news first
             articles = await news_service.get_or_refresh_daily_news(
-                db=db, niche=niche, sub_niche=sub_niche, keywords=prefs.search_keywords if prefs else ""
+                db=db,
+                niche=niche,
+                sub_niche=sub_niche,
+                keywords=prefs.search_keywords if prefs else "",
+                region=active_region
             )
 
     try:
@@ -88,7 +126,8 @@ async def synthesize_news_to_ideas(
             articles=articles,
             creator=creator,
             prefs=prefs,
-            force_regenerate=(article_id is not None or creator_id is not None)
+            force_regenerate=(article_id is not None or creator_id is not None),
+            region=active_region
         )
         return ai_ideas
     except (PermissionError, RuntimeError) as e:
@@ -119,7 +158,7 @@ def save_angle_to_ideas_bank(
         intended_platform="YouTube",
         source_inspiration=f"News: {article.headline} ({article.source_name}) - {article.source_url}",
         priority="High",
-        tags=["trending", "news-driven", article.sub_niche.lower().replace(" ", "-") if article.sub_niche else "tech"],
+        tags=["trending", "news-driven", (article.region or "global").lower(), article.sub_niche.lower().replace(" ", "-") if article.sub_niche else "tech"],
         status="Active",
         notes=notes_content
     )

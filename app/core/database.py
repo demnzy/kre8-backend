@@ -92,6 +92,9 @@ def ensure_database_schema(bind_engine):
         ("social_accounts", "raw_details", "JSON"),
         ("user_preferences", "twitter_client_id", "VARCHAR(255)"),
         ("user_preferences", "twitter_client_secret", "VARCHAR(255)"),
+        ("user_preferences", "news_region", "VARCHAR(50) DEFAULT 'GLOBAL'"),
+        ("news_articles", "region", "VARCHAR(50) DEFAULT 'GLOBAL'"),
+        ("news_articles", "category", "VARCHAR(50) DEFAULT 'general'"),
     ]
     with bind_engine.connect() as conn:
         for table, col, col_type in columns_to_add:

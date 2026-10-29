@@ -43,6 +43,7 @@ class PreferencesUpdate(BaseModel):
     openrouter_api_key: Optional[str] = None
     deepseek_api_key: Optional[str] = None
     news_api_key: Optional[str] = None
+    news_region: Optional[str] = "GLOBAL"
     youtube_client_id: Optional[str] = None
     youtube_client_secret: Optional[str] = None
     linkedin_client_id: Optional[str] = None
@@ -70,6 +71,7 @@ class PreferencesOut(BaseModel):
     openrouter_api_key: Optional[str] = None
     deepseek_api_key: Optional[str] = None
     news_api_key: Optional[str] = None
+    news_region: Optional[str] = "GLOBAL"
     youtube_client_id: Optional[str] = None
     linkedin_client_id: Optional[str] = None
     tiktok_client_key: Optional[str] = None
@@ -91,10 +93,18 @@ class NewsAIIdeaOut(BaseModel):
     class Config:
         from_attributes = True
 
+class NewsRegionOut(BaseModel):
+    code: str
+    label: str
+    flag: str
+    description: Optional[str] = None
+
 class NewsArticleOut(BaseModel):
     id: int
     niche: str
     sub_niche: str
+    region: Optional[str] = "GLOBAL"
+    category: Optional[str] = "general"
     headline: str
     summary: Optional[str]
     source_name: Optional[str]
