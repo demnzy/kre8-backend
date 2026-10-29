@@ -111,7 +111,7 @@ def fetch_x_public_fallback(clean_handle: str, fallback_msg: Optional[str] = Non
     except Exception:
         pass
 
-    msg = fallback_msg or "Automated X lookup requires X_BEARER_TOKEN in .env (free at developer.x.com). Enter metrics manually below."
+    msg = fallback_msg or "Automated X lookup requires X_BEARER_TOKEN or APIFY_API_KEY in .env. Enter metrics manually below."
     return {
         "success": bool(avatar_url or followers > 0),
         "platform": "x",
@@ -130,8 +130,106 @@ def fetch_x_public_fallback(clean_handle: str, fallback_msg: Optional[str] = Non
         "message": msg if not (avatar_url or followers > 0) else None
     }
 
+def fetch_apify_x(handle_or_url: str) -> Dict[str, Any]:
+    """Inspect X / Twitter profile and recent tweets using Apify actor."""
+    clean_handle = handle_or_url.strip()
+    if "twitter.com/" in clean_handle.lower() or "x.com/" in clean_handle.lower():
+        clean_handle = clean_handle.split('/')[-1].split('?')[0]
+    clean_handle = clean_handle.lstrip('@')
+
+    token = (settings.APIFY_API_KEY or "").strip()
+    if not token:
+        return {
+            "success": False,
+            "platform": "x",
+            "handle": f"@{clean_handle}",
+            "message": "Apify token not set. Add APIFY_API_KEY in kre8-backend/.env or enter metrics manually."
+        }
+
+    # 1. Fetch user profile via apidojo/twitter-user-scraper
+    actor_endpoint = f"https://api.apify.com/v2/acts/apidojo~twitter-user-scraper/run-sync-get-dataset-items?token={token}"
+    run_input = {"twitterHandles": [clean_handle]}
+
+    try:
+        with httpx.Client(timeout=35.0) as client:
+            res = client.post(actor_endpoint, json=run_input)
+            items = res.json() if res.status_code in (200, 201) else []
+
+            # If primary actor empty, try query via tweet-scraper
+            if not items or not isinstance(items, list):
+                alt_endpoint = f"https://api.apify.com/v2/acts/apidojo~tweet-scraper/run-sync-get-dataset-items?token={token}"
+                alt_res = client.post(alt_endpoint, json={"searchTerms": [f"from:{clean_handle}"], "maxTweets": 10})
+                if alt_res.status_code in (200, 201):
+                    items = alt_res.json()
+
+            if not items or not isinstance(items, list):
+                return fetch_x_public_fallback(clean_handle, fallback_msg="No X profile data found for this handle via Apify.")
+
+            first = items[0]
+            author = first.get("author", {}) or (first if ("followers" in first or "followersCount" in first) else {})
+            display_name = author.get("name") or first.get("name") or clean_handle
+            avatar = author.get("profilePicture") or author.get("avatar") or first.get("profilePicture")
+            followers = int(author.get("followers") or author.get("followersCount") or first.get("followers") or 0)
+            following = int(author.get("following") or author.get("followingCount") or first.get("following") or 0)
+            tweet_count = int(author.get("statusesCount") or author.get("tweetsCount") or first.get("statusesCount") or 0)
+
+            recent_posts = []
+            total_impressions = 0
+            total_likes = 0
+            for item in items[:10]:
+                tw_id = str(item.get("id") or item.get("tweetId") or "")
+                text = item.get("text") or item.get("full_text") or ""
+                if not text and not tw_id:
+                    continue
+                likes = int(item.get("likeCount") or item.get("likes") or 0)
+                retweets = int(item.get("retweetCount") or item.get("retweets") or 0)
+                replies = int(item.get("replyCount") or item.get("replies") or 0)
+                views = int(item.get("viewCount") or item.get("views") or (likes * 15))
+                total_impressions += views
+                total_likes += likes
+                created_at = item.get("createdAt") or item.get("created_at") or ""
+                recent_posts.append({
+                    "video_id": tw_id,
+                    "title": text[:70] + ("..." if len(text) > 70 else ""),
+                    "published_at": str(created_at),
+                    "thumbnail_url": avatar,
+                    "views": views,
+                    "likes": likes,
+                    "retweets": retweets,
+                    "replies": replies,
+                    "engagement_rate": round(((likes + retweets + replies) / max(1, views)) * 100, 2) if views > 0 else 0.0,
+                    "url": item.get("url") or f"https://x.com/{clean_handle}/status/{tw_id}"
+                })
+
+            avg_views = int(total_impressions / max(1, len(recent_posts))) if recent_posts else 0
+            avg_eng = round((total_likes / max(1, total_impressions)) * 100, 2) if total_impressions > 0 else 3.0
+
+            return {
+                "success": True,
+                "platform": "x",
+                "handle": f"@{clean_handle}",
+                "channel_title": display_name,
+                "channel_id": str(author.get("id", clean_handle)),
+                "avatar_url": avatar,
+                "followers": followers,
+                "total_videos": tweet_count or len(recent_posts),
+                "total_tracked_views": total_impressions,
+                "avg_views": avg_views,
+                "avg_engagement": avg_eng,
+                "cadence_weekly": round(len(recent_posts) / 2.0, 1) if recent_posts else 0.0,
+                "top_video": max(recent_posts, key=lambda x: x["views"]) if recent_posts else None,
+                "recent_videos": recent_posts,
+                "raw_metrics": {
+                    "following": following,
+                    "posts_count": tweet_count or len(recent_posts),
+                    "total_likes": total_likes
+                }
+            }
+    except Exception as e:
+        return fetch_x_public_fallback(clean_handle, fallback_msg=f"Apify X lookup note: {str(e)}")
+
 def fetch_x_telemetry(handle_or_url: str) -> Dict[str, Any]:
-    """Inspect X / Twitter profile using X API v2 Bearer Token, with public fallback."""
+    """Inspect X / Twitter profile using X API v2 Bearer Token or Apify actor, with public fallback."""
     clean_handle = handle_or_url.strip()
     if "twitter.com/" in clean_handle.lower() or "x.com/" in clean_handle.lower():
         clean_handle = clean_handle.split('/')[-1].split('?')[0]
@@ -141,6 +239,12 @@ def fetch_x_telemetry(handle_or_url: str) -> Dict[str, Any]:
         return {"success": False, "platform": "x", "handle": "", "message": "Invalid X handle"}
 
     token = (settings.X_BEARER_TOKEN or "").strip()
+    apify_token = (settings.APIFY_API_KEY or "").strip()
+
+    # If official Bearer token is not set, but Apify is available, use Apify!
+    if not token and apify_token:
+        return fetch_apify_x(clean_handle)
+
     if not token:
         return fetch_x_public_fallback(clean_handle)
 
