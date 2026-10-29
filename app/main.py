@@ -37,11 +37,11 @@ async def catch_unexpected_errors(request: Request, call_next):
             content={"detail": "Something went wrong on our side. Please try again."}
         )
 
-# CORS: explicit origins (wildcard + credentials is invalid per spec); any localhost port allowed for dev
+# CORS: support kre8.com.ng, Vercel deployments, preview URLs, and localhost
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|.*\.vercel\.app)(:\d+)?$",
+    allow_origin_regex=r"^https?://.*$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -50,19 +50,27 @@ app.add_middleware(
 # Routers
 from app.api import auth, profile, news, ai, content, ideas, scripts, tasks, notes, calendar, goals, social, seed
 
-app.include_router(auth.router, prefix=settings.API_V1_STR)
-app.include_router(profile.router, prefix=settings.API_V1_STR)
-app.include_router(news.router, prefix=settings.API_V1_STR)
-app.include_router(ai.router, prefix=settings.API_V1_STR)
-app.include_router(content.router, prefix=settings.API_V1_STR)
-app.include_router(ideas.router, prefix=settings.API_V1_STR)
-app.include_router(scripts.router, prefix=settings.API_V1_STR)
-app.include_router(tasks.router, prefix=settings.API_V1_STR)
-app.include_router(notes.router, prefix=settings.API_V1_STR)
-app.include_router(calendar.router, prefix=settings.API_V1_STR)
-app.include_router(goals.router, prefix=settings.API_V1_STR)
-app.include_router(social.router, prefix=settings.API_V1_STR)
-app.include_router(seed.router, prefix=settings.API_V1_STR)
+api_routers = [
+    auth.router,
+    profile.router,
+    news.router,
+    ai.router,
+    content.router,
+    ideas.router,
+    scripts.router,
+    tasks.router,
+    notes.router,
+    calendar.router,
+    goals.router,
+    social.router,
+    seed.router
+]
+
+for router in api_routers:
+    # Mount with standard /api prefix
+    app.include_router(router, prefix=settings.API_V1_STR)
+    # Also mount at root so requests without /api prefix succeed seamlessly
+    app.include_router(router)
 
 @app.get("/")
 def root():

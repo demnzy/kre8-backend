@@ -33,6 +33,8 @@ class Settings:
         "http://127.0.0.1:5173",
         "http://localhost:4173",
         "http://localhost:3000",
+        "https://kre8.com.ng",
+        "https://www.kre8.com.ng",
     ]
     
     # Gemini API Key & Model Configuration
