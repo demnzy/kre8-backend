@@ -148,7 +148,12 @@ def save_angle_to_ideas_bank(
     hooks_text = "\n".join([f"• {h}" for h in (angle.viral_hooks or [])])
     points_text = "\n".join([f"- {p}" for p in (angle.talking_points or [])])
     
-    notes_content = f"Why it matters:\n{angle.why_it_matters}\n\nViral Hooks:\n{hooks_text}\n\nTalking Points:\n{points_text}"
+    notes_sections = []
+    if hooks_text:
+        notes_sections.append(f"Viral Hooks:\n{hooks_text}")
+    if points_text:
+        notes_sections.append(f"Talking Points:\n{points_text}")
+    notes_content = "\n\n".join(notes_sections) if notes_sections else None
 
     idea = ContentIdea(
         user_id=current_user.id,
