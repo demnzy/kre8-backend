@@ -5,8 +5,10 @@ import json
 import subprocess
 import urllib.request
 import feedparser
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from app.core.config import settings
 from app.core.database import get_db
 from app.models.models import User, SocialAccount, AnalyticsSnapshot, PublishedPost, CreatorWatchlist
 from app.schemas.schemas import (
@@ -72,6 +74,361 @@ class SocialStatsUpdatePayload(BaseModel):
 
 class YouTubeLookupRequest(BaseModel):
     handle: str
+
+class PlatformLookupRequest(BaseModel):
+    handle: str
+
+def fetch_x_public_fallback(clean_handle: str, fallback_msg: Optional[str] = None) -> Dict[str, Any]:
+    """Attempt public scrape for X profile when bearer token is missing or unauthorized."""
+    url = f"https://x.com/{clean_handle}"
+    avatar_url = None
+    display_name = clean_handle
+    followers = 0
+    try:
+        p = subprocess.run(
+            ["curl.exe", "-s", "-L", "--max-time", "10", url],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            errors="ignore"
+        )
+        if p.returncode == 0 and p.stdout:
+            html = p.stdout
+            title_m = re.search(r'<meta property="og:title" content="([^"]+)"', html)
+            if title_m:
+                display_name = title_m.group(1).replace(" on X", "").replace(" on Twitter", "").strip()
+            avatar_m = re.search(r'<meta property="og:image" content="([^"]+)"', html)
+            if avatar_m:
+                avatar_url = avatar_m.group(1)
+            desc_m = re.search(r'<meta property="og:description" content="([^"]+)"', html)
+            if desc_m:
+                sub_m = re.search(r'([\d\.,]+[KMBkmb]?)\s+Followers', desc_m.group(1), re.IGNORECASE)
+                if sub_m:
+                    num_str = sub_m.group(1).replace(',', '')
+                    if num_str[-1].upper() == 'K': followers = int(float(num_str[:-1]) * 1000)
+                    elif num_str[-1].upper() == 'M': followers = int(float(num_str[:-1]) * 1000000)
+                    else: followers = int(float(num_str))
+    except Exception:
+        pass
+
+    msg = fallback_msg or "Automated X lookup requires X_BEARER_TOKEN in .env (free at developer.x.com). Enter metrics manually below."
+    return {
+        "success": bool(avatar_url or followers > 0),
+        "platform": "x",
+        "handle": f"@{clean_handle}",
+        "channel_title": display_name,
+        "channel_id": clean_handle,
+        "avatar_url": avatar_url,
+        "followers": followers,
+        "total_videos": 0,
+        "total_tracked_views": 0,
+        "avg_views": 0,
+        "avg_engagement": 3.0,
+        "cadence_weekly": 0.0,
+        "top_video": None,
+        "recent_videos": [],
+        "message": msg if not (avatar_url or followers > 0) else None
+    }
+
+def fetch_x_telemetry(handle_or_url: str) -> Dict[str, Any]:
+    """Inspect X / Twitter profile using X API v2 Bearer Token, with public fallback."""
+    clean_handle = handle_or_url.strip()
+    if "twitter.com/" in clean_handle.lower() or "x.com/" in clean_handle.lower():
+        clean_handle = clean_handle.split('/')[-1].split('?')[0]
+    clean_handle = clean_handle.lstrip('@')
+
+    if not clean_handle:
+        return {"success": False, "platform": "x", "handle": "", "message": "Invalid X handle"}
+
+    token = (settings.X_BEARER_TOKEN or "").strip()
+    if not token:
+        return fetch_x_public_fallback(clean_handle)
+
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        with httpx.Client(timeout=12.0) as client:
+            user_url = f"https://api.twitter.com/2/users/by/username/{clean_handle}?user.fields=public_metrics,profile_image_url,description,verified"
+            u_res = client.get(user_url, headers=headers)
+            if u_res.status_code != 200:
+                err_data = u_res.json() if "application/json" in u_res.headers.get("content-type", "") else {}
+                err_msg = err_data.get("detail") or err_data.get("title") or f"X API error {u_res.status_code}"
+                return fetch_x_public_fallback(clean_handle, fallback_msg=f"X API: {err_msg}")
+
+            u_json = u_res.json()
+            data = u_json.get("data")
+            if not data:
+                return fetch_x_public_fallback(clean_handle, fallback_msg="User not found on X")
+
+            user_id = data.get("id")
+            display_name = data.get("name", clean_handle)
+            avatar_url = data.get("profile_image_url")
+            metrics = data.get("public_metrics", {})
+            followers = int(metrics.get("followers_count", 0))
+            following = int(metrics.get("following_count", 0))
+            tweet_count = int(metrics.get("tweet_count", 0))
+
+            tweets_url = f"https://api.twitter.com/2/users/{user_id}/tweets?tweet.fields=public_metrics,created_at&max_results=10"
+            t_res = client.get(tweets_url, headers=headers)
+            recent_posts = []
+            total_likes = 0
+            total_impressions = 0
+            if t_res.status_code == 200:
+                t_json = t_res.json()
+                for tw in t_json.get("data", []):
+                    pm = tw.get("public_metrics", {})
+                    l_count = int(pm.get("like_count", 0))
+                    rt_count = int(pm.get("retweet_count", 0))
+                    rep_count = int(pm.get("reply_count", 0))
+                    imp_count = int(pm.get("impression_count", 0))
+                    total_likes += l_count
+                    total_impressions += imp_count
+                    recent_posts.append({
+                        "video_id": tw.get("id", ""),
+                        "title": (tw.get("text") or "")[:80] + ("..." if len(tw.get("text", "")) > 80 else ""),
+                        "published_at": tw.get("created_at", ""),
+                        "thumbnail_url": avatar_url,
+                        "views": imp_count,
+                        "likes": l_count,
+                        "retweets": rt_count,
+                        "replies": rep_count,
+                        "engagement_rate": round(((l_count + rt_count + rep_count) / max(1, imp_count)) * 100, 2) if imp_count > 0 else 0.0,
+                        "url": f"https://x.com/{clean_handle}/status/{tw.get('id')}"
+                    })
+
+            avg_eng = round((total_likes / max(1, total_impressions)) * 100, 2) if total_impressions > 0 else 2.5
+            return {
+                "success": True,
+                "platform": "x",
+                "handle": f"@{clean_handle}",
+                "channel_title": display_name,
+                "channel_id": user_id,
+                "avatar_url": avatar_url,
+                "followers": followers,
+                "total_videos": tweet_count,
+                "total_tracked_views": total_impressions,
+                "avg_views": int(total_impressions / max(1, len(recent_posts))) if recent_posts else 0,
+                "avg_engagement": avg_eng,
+                "cadence_weekly": round(len(recent_posts) / 2.0, 1) if recent_posts else 0.0,
+                "top_video": max(recent_posts, key=lambda x: x["views"]) if recent_posts else None,
+                "recent_videos": recent_posts,
+                "raw_metrics": {
+                    "following": following,
+                    "posts_count": tweet_count,
+                    "total_likes": total_likes
+                }
+            }
+    except Exception as e:
+        return fetch_x_public_fallback(clean_handle, fallback_msg=str(e))
+
+def fetch_apify_tiktok(handle_or_url: str) -> Dict[str, Any]:
+    """Inspect TikTok profile using Apify Free Scraper Actor."""
+    clean_handle = handle_or_url.strip()
+    if "tiktok.com/@" in clean_handle.lower():
+        clean_handle = clean_handle.split('@')[-1].split('/')[0].split('?')[0]
+    clean_handle = clean_handle.lstrip('@')
+
+    token = (settings.APIFY_API_KEY or "").strip()
+    if not token:
+        return {
+            "success": False,
+            "platform": "tiktok",
+            "handle": f"@{clean_handle}",
+            "message": "Apify token not set. Add APIFY_API_KEY to kre8-backend/.env (free $5/mo credit at apify.com) or enter metrics manually below."
+        }
+
+    actor_endpoint = f"https://api.apify.com/v2/acts/clockworks~free-tiktok-scraper/run-sync-get-dataset-items?token={token}"
+    run_input = {
+        "profiles": [clean_handle],
+        "resultsPerPage": 10,
+        "shouldDownloadVideos": False
+    }
+
+    try:
+        with httpx.Client(timeout=35.0) as client:
+            res = client.post(actor_endpoint, json=run_input)
+            if res.status_code not in (200, 201):
+                alt_endpoint = f"https://api.apify.com/v2/acts/apidojo~tiktok-scraper/run-sync-get-dataset-items?token={token}"
+                res = client.post(alt_endpoint, json={"usernames": [clean_handle], "maxItems": 10})
+
+            if res.status_code not in (200, 201):
+                return {
+                    "success": False,
+                    "platform": "tiktok",
+                    "handle": f"@{clean_handle}",
+                    "message": f"Apify error {res.status_code}: Please check your APIFY_API_KEY or handle."
+                }
+
+            items = res.json()
+            if not items or not isinstance(items, list):
+                return {
+                    "success": False,
+                    "platform": "tiktok",
+                    "handle": f"@{clean_handle}",
+                    "message": "No TikTok profile data found for this handle."
+                }
+
+            first = items[0]
+            author = first.get("authorMeta", {}) or first.get("author", {}) or first
+
+            display_name = author.get("nickName") or author.get("name") or author.get("nickname") or clean_handle
+            avatar = author.get("avatar") or author.get("avatarThumb") or author.get("avatarMedium")
+            followers = int(author.get("fans") or author.get("followers") or author.get("followerCount") or 0)
+            total_likes = int(author.get("heart") or author.get("heartCount") or author.get("likes") or 0)
+            video_count = int(author.get("video") or author.get("videoCount") or len(items))
+
+            recent_vids = []
+            total_views = 0
+            for item in items[:10]:
+                vid_id = str(item.get("id") or item.get("videoId") or "")
+                desc = item.get("text") or item.get("desc") or "TikTok Video"
+                play_count = int(item.get("playCount") or item.get("stats", {}).get("playCount") or 0)
+                digg_count = int(item.get("diggCount") or item.get("stats", {}).get("diggCount") or 0)
+                pub_time = item.get("createTimeISO") or item.get("createTime") or ""
+                web_url = item.get("webVideoUrl") or f"https://www.tiktok.com/@{clean_handle}/video/{vid_id}"
+
+                total_views += play_count
+                recent_vids.append({
+                    "video_id": vid_id,
+                    "title": desc[:70] + ("..." if len(desc) > 70 else ""),
+                    "published_at": str(pub_time),
+                    "thumbnail_url": item.get("video", {}).get("cover") or avatar,
+                    "views": play_count,
+                    "likes": digg_count,
+                    "engagement_rate": round((digg_count / max(1, play_count)) * 100, 2) if play_count > 0 else 0.0,
+                    "url": web_url
+                })
+
+            avg_views = int(total_views / max(1, len(recent_vids))) if recent_vids else 0
+            avg_eng = round((total_likes / max(1, total_views)) * 100, 2) if total_views > 0 else 4.0
+
+            return {
+                "success": True,
+                "platform": "tiktok",
+                "handle": f"@{clean_handle}",
+                "channel_title": display_name,
+                "channel_id": str(author.get("id", clean_handle)),
+                "avatar_url": avatar,
+                "followers": followers,
+                "total_videos": video_count,
+                "total_tracked_views": total_views,
+                "avg_views": avg_views,
+                "avg_engagement": avg_eng,
+                "cadence_weekly": round(len(recent_vids) / 2.0, 1) if recent_vids else 0.0,
+                "top_video": max(recent_vids, key=lambda x: x["views"]) if recent_vids else None,
+                "recent_videos": recent_vids,
+                "raw_metrics": {
+                    "total_likes": total_likes,
+                    "posts_count": video_count
+                }
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "platform": "tiktok",
+            "handle": f"@{clean_handle}",
+            "message": f"Apify lookup failed: {str(e)}"
+        }
+
+def fetch_apify_instagram(handle_or_url: str) -> Dict[str, Any]:
+    """Inspect Instagram profile using Apify Instagram Scraper Actor."""
+    clean_handle = handle_or_url.strip()
+    if "instagram.com/" in clean_handle.lower():
+        clean_handle = clean_handle.split('/')[-1].split('?')[0]
+    clean_handle = clean_handle.lstrip('@')
+
+    token = (settings.APIFY_API_KEY or "").strip()
+    if not token:
+        return {
+            "success": False,
+            "platform": "instagram",
+            "handle": f"@{clean_handle}",
+            "message": "Apify token not set. Add APIFY_API_KEY to kre8-backend/.env (free $5/mo credit at apify.com) or enter metrics manually below."
+        }
+
+    actor_endpoint = f"https://api.apify.com/v2/acts/apify~instagram-profile-scraper/run-sync-get-dataset-items?token={token}"
+    run_input = {"usernames": [clean_handle]}
+
+    try:
+        with httpx.Client(timeout=35.0) as client:
+            res = client.post(actor_endpoint, json=run_input)
+            if res.status_code not in (200, 201):
+                alt_endpoint = f"https://api.apify.com/v2/acts/apidojo~instagram-scraper/run-sync-get-dataset-items?token={token}"
+                res = client.post(alt_endpoint, json={"usernames": [clean_handle]})
+
+            if res.status_code not in (200, 201):
+                return {
+                    "success": False,
+                    "platform": "instagram",
+                    "handle": f"@{clean_handle}",
+                    "message": f"Apify error {res.status_code}: Please check your APIFY_API_KEY."
+                }
+
+            items = res.json()
+            if not items or not isinstance(items, list):
+                return {
+                    "success": False,
+                    "platform": "instagram",
+                    "handle": f"@{clean_handle}",
+                    "message": "No Instagram profile data returned."
+                }
+
+            prof = items[0]
+            display_name = prof.get("fullName") or prof.get("username") or clean_handle
+            avatar = prof.get("profilePicUrl") or prof.get("profilePicUrlHD")
+            followers = int(prof.get("followersCount") or 0)
+            posts_count = int(prof.get("postsCount") or 0)
+
+            latest_posts = prof.get("latestPosts", [])
+            recent_vids = []
+            total_likes = 0
+            for p in latest_posts[:10]:
+                p_id = str(p.get("id") or p.get("shortCode") or "")
+                caption = (p.get("caption") or "Instagram Post")
+                p_likes = int(p.get("likesCount") or 0)
+                p_comments = int(p.get("commentsCount") or 0)
+                total_likes += p_likes
+                recent_vids.append({
+                    "video_id": p_id,
+                    "title": caption[:70] + ("..." if len(caption) > 70 else ""),
+                    "published_at": p.get("timestamp") or "",
+                    "thumbnail_url": p.get("displayUrl") or avatar,
+                    "views": p_likes * 8,
+                    "likes": p_likes,
+                    "comments": p_comments,
+                    "engagement_rate": round(((p_likes + p_comments) / max(1, followers)) * 100, 2) if followers > 0 else 0.0,
+                    "url": p.get("url") or f"https://www.instagram.com/p/{p.get('shortCode', '')}/"
+                })
+
+            avg_eng = round((total_likes / max(1, followers * len(recent_vids))) * 100, 2) if followers > 0 and recent_vids else 3.2
+
+            return {
+                "success": True,
+                "platform": "instagram",
+                "handle": f"@{clean_handle}",
+                "channel_title": display_name,
+                "channel_id": str(prof.get("id", clean_handle)),
+                "avatar_url": avatar,
+                "followers": followers,
+                "total_videos": posts_count,
+                "total_tracked_views": total_likes * 8,
+                "avg_views": int((total_likes * 8) / max(1, len(recent_vids))) if recent_vids else 0,
+                "avg_engagement": avg_eng,
+                "cadence_weekly": round(len(recent_vids) / 2.0, 1) if recent_vids else 0.0,
+                "top_video": max(recent_vids, key=lambda x: x["likes"]) if recent_vids else None,
+                "recent_videos": recent_vids,
+                "raw_metrics": {
+                    "posts_count": posts_count,
+                    "total_likes": total_likes
+                }
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "platform": "instagram",
+            "handle": f"@{clean_handle}",
+            "message": f"Apify Instagram lookup failed: {str(e)}"
+        }
+
 
 def fetch_youtube_telemetry(handle_or_url: str) -> Dict[str, Any]:
     """Inspect public YouTube channel handle for live subscriber count, avatar, channel title, and 15 recent video uploads."""
@@ -258,6 +615,24 @@ def lookup_youtube_handle(req: YouTubeLookupRequest):
         raise HTTPException(status_code=400, detail="Invalid YouTube handle")
     return fetch_youtube_telemetry(clean_handle)
 
+@router.post("/lookup/{platform}")
+def lookup_platform_handle(platform: str, req: PlatformLookupRequest):
+    """Inspect any supported platform (YouTube, X, TikTok, Instagram) for live telemetry and recent content."""
+    clean_handle = req.handle.strip()
+    if not clean_handle:
+        raise HTTPException(status_code=400, detail="Invalid handle or URL")
+    p = platform.lower()
+    if p == "youtube":
+        return fetch_youtube_telemetry(clean_handle)
+    elif p in ("x", "twitter"):
+        return fetch_x_telemetry(clean_handle)
+    elif p == "tiktok":
+        return fetch_apify_tiktok(clean_handle)
+    elif p == "instagram":
+        return fetch_apify_instagram(clean_handle)
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported platform '{platform}'. Supported: youtube, x, tiktok, instagram.")
+
 @router.post("/connect/{platform}")
 def connect_account(
     platform: str,
@@ -265,7 +640,7 @@ def connect_account(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Connect an account for YouTube, LinkedIn, TikTok, Instagram, or X with real creator stats."""
+    """Connect an account for YouTube, TikTok, Instagram, or X with real creator stats."""
     existing = db.query(SocialAccount).filter(
         SocialAccount.user_id == current_user.id,
         SocialAccount.platform == platform.lower()
@@ -287,24 +662,36 @@ def connect_account(
     if payload and payload.recent_videos:
         raw_data["recent_videos"] = payload.recent_videos
 
-    # If YouTube, live scrape public telemetry
-    if platform.lower() == "youtube" and name:
-        yt = fetch_youtube_telemetry(name)
-        if yt.get("success"):
-            name = yt.get("channel_title") or name
-            avatar = yt.get("avatar_url") or avatar
-            cid = yt.get("channel_id") or cid
-            followers = yt.get("followers") or followers
-            total_videos = yt.get("total_videos") or total_videos
-            views = yt.get("total_tracked_views") or views
-            engagement_rate = yt.get("avg_engagement") or engagement_rate
-            raw_data = {
-                "recent_videos": yt.get("recent_videos", []),
-                "avg_views": yt.get("avg_views", 0),
-                "cadence_weekly": yt.get("cadence_weekly", 0.0),
-                "top_video": yt.get("top_video"),
-                "subscribers_text": yt.get("subscribers_text")
-            }
+    # Automated live inspection if handle provided and metrics not already fully manual
+    plat = platform.lower()
+    telemetry = None
+    if name and (followers == 0 or not raw_data.get("recent_videos")):
+        if plat == "youtube":
+            telemetry = fetch_youtube_telemetry(name)
+        elif plat in ("x", "twitter"):
+            telemetry = fetch_x_telemetry(name)
+        elif plat == "tiktok":
+            telemetry = fetch_apify_tiktok(name)
+        elif plat == "instagram":
+            telemetry = fetch_apify_instagram(name)
+
+    if telemetry and telemetry.get("success"):
+        name = telemetry.get("channel_title") or name
+        avatar = telemetry.get("avatar_url") or avatar
+        cid = str(telemetry.get("channel_id") or cid or "")
+        followers = telemetry.get("followers") or followers
+        total_videos = telemetry.get("total_videos") or total_videos
+        views = telemetry.get("total_tracked_views") or views
+        engagement_rate = telemetry.get("avg_engagement") or engagement_rate
+        raw_data = {
+            "recent_videos": telemetry.get("recent_videos", []),
+            "avg_views": telemetry.get("avg_views", 0),
+            "cadence_weekly": telemetry.get("cadence_weekly", 0.0),
+            "top_video": telemetry.get("top_video"),
+            "subscribers_text": telemetry.get("subscribers_text"),
+            **(telemetry.get("raw_metrics") or {})
+        }
+
 
     if not existing:
         existing = SocialAccount(
@@ -459,53 +846,74 @@ def sync_account(
     if not account:
         raise HTTPException(status_code=404, detail="Social account not found")
 
-    if account.platform.lower() == "youtube":
-        yt = fetch_youtube_telemetry(account.account_name)
-        if yt.get("success"):
-            account.account_name = yt.get("channel_title") or account.account_name
-            account.avatar_url = yt.get("avatar_url") or account.avatar_url
-            account.channel_id = yt.get("channel_id") or account.channel_id
-            account.total_videos_count = yt.get("total_videos") or account.total_videos_count
-            raw_data = {
-                "recent_videos": yt.get("recent_videos", []),
-                "avg_views": yt.get("avg_views", 0),
-                "cadence_weekly": yt.get("cadence_weekly", 0.0),
-                "top_video": yt.get("top_video"),
-                "subscribers_text": yt.get("subscribers_text")
-            }
-            account.raw_details = raw_data
-            account.last_synced_at = datetime.utcnow()
+    plat = account.platform.lower()
+    telemetry = None
+    if plat == "youtube":
+        telemetry = fetch_youtube_telemetry(account.account_name)
+    elif plat in ("x", "twitter"):
+        telemetry = fetch_x_telemetry(account.account_name)
+    elif plat == "tiktok":
+        telemetry = fetch_apify_tiktok(account.account_name)
+    elif plat == "instagram":
+        telemetry = fetch_apify_instagram(account.account_name)
+
+    if telemetry and telemetry.get("success"):
+        account.account_name = telemetry.get("channel_title") or account.account_name
+        if telemetry.get("avatar_url"):
+            account.avatar_url = telemetry.get("avatar_url")
+        if telemetry.get("channel_id"):
+            account.channel_id = str(telemetry.get("channel_id"))
+        if telemetry.get("total_videos") is not None:
+            account.total_videos_count = int(telemetry.get("total_videos"))
+
+        raw_data = {
+            "recent_videos": telemetry.get("recent_videos", []),
+            "avg_views": telemetry.get("avg_views", 0),
+            "cadence_weekly": telemetry.get("cadence_weekly", 0.0),
+            "top_video": telemetry.get("top_video"),
+            "subscribers_text": telemetry.get("subscribers_text"),
+            **(telemetry.get("raw_metrics") or {})
+        }
+        account.raw_details = raw_data
+        account.last_synced_at = datetime.utcnow()
+        db.commit()
+
+        latest_snap = db.query(AnalyticsSnapshot).filter(
+            AnalyticsSnapshot.social_account_id == account.id
+        ).order_by(AnalyticsSnapshot.date.desc()).first()
+
+        followers = telemetry.get("followers", 0)
+        views = telemetry.get("total_tracked_views", 0)
+        eng_rate = telemetry.get("avg_engagement", 0.0)
+
+        if latest_snap and (latest_snap.date.date() == datetime.utcnow().date()):
+            latest_snap.followers = followers
+            latest_snap.views = views
+            latest_snap.impressions = views * 2
+            latest_snap.engagement_rate = eng_rate
+            latest_snap.raw_data = raw_data
+            db.commit()
+        else:
+            snap = AnalyticsSnapshot(
+                social_account_id=account.id,
+                followers=followers,
+                views=views,
+                impressions=views * 2,
+                engagement_rate=eng_rate,
+                raw_data=raw_data
+            )
+            db.add(snap)
             db.commit()
 
-            latest_snap = db.query(AnalyticsSnapshot).filter(
-                AnalyticsSnapshot.social_account_id == account.id
-            ).order_by(AnalyticsSnapshot.date.desc()).first()
-
-            if latest_snap and (latest_snap.date.date() == datetime.utcnow().date()):
-                latest_snap.followers = yt.get("followers", 0)
-                latest_snap.views = yt.get("total_tracked_views", 0)
-                latest_snap.engagement_rate = yt.get("avg_engagement", 0.0)
-                latest_snap.raw_data = raw_data
-                db.commit()
-            else:
-                snap = AnalyticsSnapshot(
-                    social_account_id=account.id,
-                    followers=yt.get("followers", 0),
-                    views=yt.get("total_tracked_views", 0),
-                    impressions=yt.get("total_tracked_views", 0) * 2,
-                    engagement_rate=yt.get("avg_engagement", 0.0),
-                    raw_data=raw_data
-                )
-                db.add(snap)
-                db.commit()
-
-            return {
-                "message": f"Synchronized live telemetry for {account.account_name}!",
-                "success": True,
-                "telemetry": yt
-            }
-        else:
-            raise HTTPException(status_code=502, detail=yt.get("message", "Live sync failed"))
+        return {
+            "message": f"Synchronized live telemetry for {account.account_name}!",
+            "success": True,
+            "telemetry": telemetry
+        }
+    elif telemetry and not telemetry.get("success"):
+        account.last_synced_at = datetime.utcnow()
+        db.commit()
+        raise HTTPException(status_code=502, detail=telemetry.get("message", "Live sync failed"))
     else:
         account.last_synced_at = datetime.utcnow()
         db.commit()

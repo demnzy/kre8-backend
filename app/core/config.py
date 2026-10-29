@@ -42,4 +42,9 @@ class Settings:
     # News API Key (NewsAPI.org or GNews.io)
     NEWS_API_KEY: str = os.getenv("NEWS_API_KEY", "")
 
+    # Optional Social Platform & Scraper API Keys
+    YOUTUBE_API_KEY: str = os.getenv("YOUTUBE_API_KEY", "")
+    X_BEARER_TOKEN: str = os.getenv("X_BEARER_TOKEN", os.getenv("TWITTER_BEARER_TOKEN", ""))
+    APIFY_API_KEY: str = os.getenv("APIFY_API_KEY", os.getenv("APIFY_TOKEN", ""))
+
 settings = Settings()
