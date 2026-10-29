@@ -1,18 +1,41 @@
+import logging
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 from app.core.config import settings
 
-engine = create_engine(
-    settings.DATABASE_URL, 
-    connect_args={"check_same_thread": False} if "sqlite" in settings.DATABASE_URL else {}
-)
+logger = logging.getLogger("kre8.db")
+
+# Normalize postgres:// or postgresql:// to ensure compatibility across SQLAlchemy drivers
+raw_url = settings.DATABASE_URL or "sqlite:///./kre8.db"
+if raw_url.startswith("postgres://"):
+    db_url = raw_url.replace("postgres://", "postgresql+psycopg2://", 1)
+elif raw_url.startswith("postgresql://") and not raw_url.startswith("postgresql+"):
+    db_url = raw_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+else:
+    db_url = raw_url
+
+is_sqlite = "sqlite" in db_url
+
+engine_kwargs = {}
+if is_sqlite:
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+else:
+    # Supabase / PostgreSQL pooling optimization & health checks
+    engine_kwargs["pool_pre_ping"] = True
+    engine_kwargs["pool_recycle"] = 300
+
+engine = create_engine(db_url, **engine_kwargs)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
 
 def ensure_database_schema(bind_engine):
-    """Automatically add missing columns in SQLite for seamless schema evolution."""
+    """Automatically add missing columns in SQLite for seamless local schema evolution."""
+    # Supabase / PostgreSQL creates complete tables and columns automatically from Base.metadata.create_all
+    if bind_engine.dialect.name != "sqlite":
+        return
+
     from sqlalchemy import text
     columns_to_add = [
         ("user_preferences", "ai_provider", "VARCHAR(50) DEFAULT 'gemini'"),
@@ -37,14 +60,13 @@ def ensure_database_schema(bind_engine):
     with bind_engine.connect() as conn:
         for table, col, col_type in columns_to_add:
             try:
-                # Check if column exists
                 res = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
                 existing_cols = [row[1] for row in res]
                 if existing_cols and col not in existing_cols:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
                     conn.commit()
             except Exception as e:
-                print(f"[Database Schema] Note on {table}.{col}: {e}")
+                logger.debug(f"[Database Schema] Note on {table}.{col}: {e}")
 
 def get_db():
     db = SessionLocal()
@@ -52,4 +74,3 @@ def get_db():
         yield db
     finally:
         db.close()
-
