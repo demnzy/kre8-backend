@@ -25,6 +25,10 @@ kre8.db
 .coverage
 htmlcov/
 
+# Local synthesized audio files
+storage/audio/
+storage/
+
 # IDE & Editor
 .vscode/
 .idea/

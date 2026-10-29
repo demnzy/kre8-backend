@@ -13,6 +13,9 @@ class User(Base):
     hashed_password = Column(String(255), nullable=False)
     display_name = Column(String(100), default="Creator")
     avatar_url = Column(String(500), nullable=True)
+    subscription_tier = Column(String(50), default="free") # free, pro, studio
+    voiceover_generations_used = Column(Integer, default=0)
+    voiceover_generations_limit = Column(Integer, default=5)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     preferences = relationship("UserPreferences", back_populates="user", uselist=False)
@@ -150,6 +153,8 @@ class Script(Base):
     tone = Column(String(50), default="Conversational")
     target_duration_seconds = Column(Integer, default=60)
     full_script = Column(Text, nullable=True)
+    full_audio_url = Column(String(500), nullable=True)
+    voice_id = Column(String(100), default="en") # en, ha, fr
     generated_hooks = Column(JSON, default=list)
     generated_ctas = Column(JSON, default=list)
     versions = Column(JSON, default=list)
@@ -170,6 +175,8 @@ class ScriptClip(Base):
     estimated_duration = Column(Integer, default=5) # seconds
     on_screen_text = Column(String(500), nullable=True)
     visual_direction = Column(Text, nullable=True)
+    audio_url = Column(String(500), nullable=True)
+    audio_duration = Column(Float, nullable=True)
     transition = Column(String(100), default="Cut")
     cta = Column(String(255), nullable=True)
     

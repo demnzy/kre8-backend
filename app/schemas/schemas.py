@@ -216,6 +216,8 @@ class ScriptClipOut(BaseModel):
     visual_direction: Optional[str]
     transition: str
     cta: Optional[str]
+    audio_url: Optional[str] = None
+    audio_duration: Optional[float] = None
 
     class Config:
         from_attributes = True
@@ -226,6 +228,8 @@ class ScriptCreate(BaseModel):
     tone: Optional[str] = "Conversational"
     target_duration_seconds: Optional[int] = 60
     full_script: Optional[str] = ""
+    full_audio_url: Optional[str] = None
+    voice_id: Optional[str] = "en"
     generated_hooks: Optional[List[str]] = []
     generated_ctas: Optional[List[str]] = []
     clips: Optional[List[ScriptClipCreate]] = []
@@ -236,6 +240,8 @@ class ScriptUpdate(BaseModel):
     tone: Optional[str] = None
     target_duration_seconds: Optional[int] = None
     full_script: Optional[str] = None
+    full_audio_url: Optional[str] = None
+    voice_id: Optional[str] = None
     generated_hooks: Optional[List[str]] = None
     generated_ctas: Optional[List[str]] = None
     clips: Optional[List[ScriptClipCreate]] = None
@@ -248,6 +254,8 @@ class ScriptOut(BaseModel):
     tone: str
     target_duration_seconds: int
     full_script: Optional[str]
+    full_audio_url: Optional[str] = None
+    voice_id: Optional[str] = "en"
     generated_hooks: List[str]
     generated_ctas: List[str]
     clips: List[ScriptClipOut] = []
@@ -257,6 +265,32 @@ class ScriptOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+# Voice & TTS Schemas
+class VoiceOption(BaseModel):
+    id: str
+    name: str
+    language: str
+    language_name: str
+    gender: Optional[str] = "Neutral"
+    engine: str
+    sample_rate: int
+
+class VoiceQuotaOut(BaseModel):
+    subscription_tier: str
+    voiceover_generations_used: int
+    voiceover_generations_limit: int
+    remaining: int
+    is_unlimited: bool
+
+class SynthesizeClipRequest(BaseModel):
+    spoken_dialogue: Optional[str] = None
+    voice_id: Optional[str] = "en"
+    format: Optional[str] = "mp3"
+
+class SynthesizeScriptRequest(BaseModel):
+    voice_id: Optional[str] = "en"
+    format: Optional[str] = "mp3"
 
 # Tasks
 class TaskChecklistItem(BaseModel):

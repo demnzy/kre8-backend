@@ -48,7 +48,7 @@ app.add_middleware(
 )
 
 # Routers
-from app.api import auth, profile, news, ai, content, ideas, scripts, tasks, notes, calendar, goals, social, seed
+from app.api import auth, profile, news, ai, content, ideas, scripts, tasks, notes, calendar, goals, social, seed, voice
 
 api_routers = [
     auth.router,
@@ -58,6 +58,7 @@ api_routers = [
     content.router,
     ideas.router,
     scripts.router,
+    voice.router,
     tasks.router,
     notes.router,
     calendar.router,

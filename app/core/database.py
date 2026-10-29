@@ -91,6 +91,13 @@ def ensure_database_schema(bind_engine):
         ("user_preferences", "news_region", "VARCHAR(50) DEFAULT 'GLOBAL'"),
         ("news_articles", "region", "VARCHAR(50) DEFAULT 'GLOBAL'"),
         ("news_articles", "category", "VARCHAR(50) DEFAULT 'general'"),
+        ("users", "subscription_tier", "VARCHAR(50) DEFAULT 'free'"),
+        ("users", "voiceover_generations_used", "INTEGER DEFAULT 0"),
+        ("users", "voiceover_generations_limit", "INTEGER DEFAULT 5"),
+        ("scripts", "full_audio_url", "VARCHAR(500)"),
+        ("scripts", "voice_id", "VARCHAR(100) DEFAULT 'en'"),
+        ("script_clips", "audio_url", "VARCHAR(500)"),
+        ("script_clips", "audio_duration", "FLOAT"),
     ]
     with bind_engine.connect() as conn:
         dialect = bind_engine.dialect.name
