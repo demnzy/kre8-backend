@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -166,7 +166,7 @@ async def synthesize_full_script_audio(
         raise HTTPException(status_code=500, detail=f"Full script voiceover failed: {str(e)}")
 
 @router.get("/audio/{filename}")
-def serve_audio_file(filename: str, db: Session = Depends(get_db)):
+async def serve_audio_file(filename: str, db: Session = Depends(get_db)):
     """Streams audio file directly to browser <audio> elements with self-healing fallback."""
     # Prevent directory traversal
     safe_filename = os.path.basename(filename)
@@ -187,7 +187,7 @@ def serve_audio_file(filename: str, db: Session = Depends(get_db)):
             script = db.query(Script).filter(Script.id == script_id).first()
             lang = getattr(script, "voice_id", "en") or "en"
             try:
-                audio_bytes = VoiceService.synthesize_speech_sync(clip.spoken_dialogue, voice_id=lang, format=audio_format)
+                audio_bytes = await VoiceService.synthesize_speech(clip.spoken_dialogue, voice_id=lang, format=audio_format)
                 try:
                     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
                     with open(file_path, "wb") as f:
@@ -204,13 +204,50 @@ def serve_audio_file(filename: str, db: Session = Depends(get_db)):
         audio_format = master_match.group(2)
         script = db.query(Script).filter(Script.id == script_id).first()
         if script and script.clips:
+            # Check if all scene clips already exist on disk for instant assembly
+            all_on_disk = True
+            combined = bytearray()
+            for c in script.clips:
+                if c.spoken_dialogue and c.spoken_dialogue.strip():
+                    c_path = STORAGE_DIR / f"clip_{script_id}_{c.id}.{audio_format}"
+                    if c_path.exists():
+                        with open(c_path, "rb") as f:
+                            combined.extend(f.read())
+                    else:
+                        all_on_disk = False
+                        break
+            if all_on_disk and combined:
+                try:
+                    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+                    with open(file_path, "wb") as f:
+                        f.write(combined)
+                except Exception:
+                    pass
+                return Response(content=bytes(combined), media_type=media_type, headers={"Accept-Ranges": "bytes"})
+
+            # Parallel fallback via asyncio.gather if clips are not on disk
             lang = getattr(script, "voice_id", "en") or "en"
             try:
+                async def _get_clip_bytes(clip):
+                    if not clip.spoken_dialogue or not clip.spoken_dialogue.strip():
+                        return b""
+                    c_path = STORAGE_DIR / f"clip_{script_id}_{clip.id}.{audio_format}"
+                    if c_path.exists():
+                        with open(c_path, "rb") as f:
+                            return f.read()
+                    data = await VoiceService.synthesize_speech(clip.spoken_dialogue, voice_id=lang, format=audio_format)
+                    try:
+                        with open(c_path, "wb") as f:
+                            f.write(data)
+                    except Exception:
+                        pass
+                    return data
+
+                clip_data_list = await asyncio.gather(*[_get_clip_bytes(c) for c in script.clips])
                 combined = bytearray()
-                for c in script.clips:
-                    if c.spoken_dialogue and c.spoken_dialogue.strip():
-                        c_bytes = VoiceService.synthesize_speech_sync(c.spoken_dialogue, voice_id=lang, format=audio_format)
-                        combined.extend(c_bytes)
+                for d in clip_data_list:
+                    combined.extend(d)
+
                 if combined:
                     try:
                         STORAGE_DIR.mkdir(parents=True, exist_ok=True)
@@ -225,7 +262,7 @@ def serve_audio_file(filename: str, db: Session = Depends(get_db)):
     raise HTTPException(status_code=404, detail="Audio file not found")
 
 @router.get("/scripts/{script_id}/download-master")
-def download_master_audio(
+async def download_master_audio(
     script_id: int,
     db: Session = Depends(get_db)
 ):
@@ -236,39 +273,98 @@ def download_master_audio(
         raise HTTPException(status_code=404, detail="Script not found")
 
     safe_title = re.sub(r"[^a-zA-Z0-9_\- ]", "", script.title).replace(" ", "_")
-    download_filename = f"{safe_title}_voiceover.mp3"
+    if not safe_title:
+        safe_title = f"script_{script_id}"
 
-    filename = f"script_{script_id}_master.mp3"
-    file_path = STORAGE_DIR / filename
+    # If full_audio_url is an external link (CDN), redirect directly
+    if script.full_audio_url and (script.full_audio_url.startswith("http://") or script.full_audio_url.startswith("https://")):
+        return RedirectResponse(url=script.full_audio_url, status_code=307)
 
-    if file_path.exists():
-        return FileResponse(
-            file_path,
-            media_type="audio/mpeg",
-            filename=download_filename,
-            headers={"Content-Disposition": f'attachment; filename="{download_filename}"'}
-        )
+    # 1. Check if master file exists on disk (.mp3 or .wav)
+    for ext, mtype in [("mp3", "audio/mpeg"), ("wav", "audio/wav")]:
+        file_path = STORAGE_DIR / f"script_{script_id}_master.{ext}"
+        if file_path.exists():
+            download_name = f"{safe_title}_voiceover.{ext}"
+            return FileResponse(
+                file_path,
+                media_type=mtype,
+                filename=download_name,
+                headers={"Content-Disposition": f'attachment; filename="{download_name}"'}
+            )
 
-    # Regenerate master audio if file was removed from disk
+    # 2. Check if all scene clip files already exist on disk (instant merge without network delay)
     if script.clips:
+        for ext, mtype in [("mp3", "audio/mpeg"), ("wav", "audio/wav")]:
+            assembled = bytearray()
+            all_found = True
+            for c in script.clips:
+                if c.spoken_dialogue and c.spoken_dialogue.strip():
+                    c_path = STORAGE_DIR / f"clip_{script_id}_{c.id}.{ext}"
+                    if c_path.exists():
+                        with open(c_path, "rb") as f:
+                            assembled.extend(f.read())
+                    else:
+                        all_found = False
+                        break
+            if all_found and assembled:
+                master_file = STORAGE_DIR / f"script_{script_id}_master.{ext}"
+                try:
+                    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+                    with open(master_file, "wb") as f:
+                        f.write(assembled)
+                except Exception:
+                    pass
+                download_name = f"{safe_title}_voiceover.{ext}"
+                return FileResponse(
+                    master_file,
+                    media_type=mtype,
+                    filename=download_name,
+                    headers={"Content-Disposition": f'attachment; filename="{download_name}"'}
+                )
+
+        # 3. Concurrent synthesis fallback if clips need to be generated
         lang = getattr(script, "voice_id", "en") or "en"
-        combined = bytearray()
-        for c in script.clips:
-            if c.spoken_dialogue and c.spoken_dialogue.strip():
-                c_bytes = VoiceService.synthesize_speech_sync(c.spoken_dialogue, voice_id=lang, format="mp3")
-                combined.extend(c_bytes)
-        if combined:
+        fmt = "mp3"
+        mtype = "audio/mpeg"
+
+        async def _fetch_or_synth(clip):
+            if not clip.spoken_dialogue or not clip.spoken_dialogue.strip():
+                return b""
+            c_path = STORAGE_DIR / f"clip_{script_id}_{clip.id}.{fmt}"
+            if c_path.exists():
+                with open(c_path, "rb") as f:
+                    return f.read()
+            audio_bytes = await VoiceService.synthesize_speech(clip.spoken_dialogue, voice_id=lang, format=fmt)
             try:
                 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-                with open(file_path, "wb") as f:
-                    f.write(combined)
+                with open(c_path, "wb") as f:
+                    f.write(audio_bytes)
             except Exception:
                 pass
-            return Response(
-                content=bytes(combined),
-                media_type="audio/mpeg",
-                headers={"Content-Disposition": f'attachment; filename="{download_filename}"'}
-            )
+            return audio_bytes
+
+        try:
+            results = await asyncio.gather(*[_fetch_or_synth(c) for c in script.clips])
+            combined = bytearray()
+            for r in results:
+                combined.extend(r)
+
+            if combined:
+                master_file = STORAGE_DIR / f"script_{script_id}_master.{fmt}"
+                try:
+                    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+                    with open(master_file, "wb") as f:
+                        f.write(combined)
+                except Exception:
+                    pass
+                download_name = f"{safe_title}_voiceover.{fmt}"
+                return Response(
+                    content=bytes(combined),
+                    media_type=mtype,
+                    headers={"Content-Disposition": f'attachment; filename="{download_name}"'}
+                )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Audio download generation failed: {str(e)}")
 
     raise HTTPException(status_code=404, detail="Master audio not generated yet")
 
