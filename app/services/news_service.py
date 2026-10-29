@@ -109,12 +109,12 @@ class DailyNewsService:
     REGIONAL_DIRECT_FEEDS: Dict[str, List[tuple]] = {
         "NG": [
             ("TechCabal", "https://techcabal.com/feed/"),
-            ("Techpoint Africa", "https://techpoint.africa/feed/"),
             ("Benjamin Dada", "https://www.benjamindada.com/feed/"),
-            ("BusinessDay Nigeria", "https://businessday.ng/feed/"),
-            ("Punch Nigeria", "https://punchng.com/feed/"),
-            ("Premium Times", "https://www.premiumtimesng.com/feed"),
             ("Nairametrics", "https://nairametrics.com/feed/"),
+            ("Punch Tech", "https://punchng.com/topics/technology/feed/"),
+            ("Punch Business", "https://punchng.com/topics/business/feed/"),
+            ("BusinessDay Nigeria", "https://businessday.ng/feed/"),
+            ("Premium Times Business", "https://www.premiumtimesng.com/category/business/feed"),
             ("Rest of World (Africa)", "https://restofworld.org/region/africa/feed")
         ],
         "KE": [
@@ -237,6 +237,95 @@ class DailyNewsService:
         return cls._map_niche_to_category(fallback_niche)
 
     @classmethod
+    def is_regional_match(cls, title: str, summary: str, source_name: str, region: str) -> bool:
+        """Verify that an article genuinely originates from or explicitly discusses the target region."""
+        if not region or region.upper() in ("GLOBAL", "ALL"):
+            return True
+
+        region_upper = region.upper()
+
+        # 1. Recognized regional sources
+        known_regional_sources = {
+            "NG": [
+                "techcabal", "techpoint", "benjamin dada", "benjamindada", "businessday",
+                "punch", "premium times", "nairametrics", "vanguard", "guardian nigeria",
+                "daily trust", "thecable", "leadership news", "arise news", "semafor africa"
+            ],
+            "KE": [
+                "techweez", "disrupt africa", "business daily africa", "standard media",
+                "daily nation", "capital fm kenya", "kenyan wallstreet", "kbc"
+            ],
+            "ZA": [
+                "mybroadband", "itweb", "ventureburn", "news24", "business live",
+                "daily maverick", "fin24", "techcentral", "sabc"
+            ],
+            "UK": [
+                "sifted", "the guardian", "bbc", "the register", "telegraph",
+                "ft.com", "financial times", "uk tech news", "city a.m.", "independent"
+            ],
+            "CA": [
+                "betakit", "mobilesyrup", "financial post", "globe and mail",
+                "toronto star", "cbc", "national post", "logic"
+            ],
+            "IN": [
+                "yourstory", "inc42", "economic times", "medianama", "livemint",
+                "moneycontrol", "the hindu", "times of india", "business standard", "entrackr"
+            ],
+            "EU": [
+                "sifted", "eu-startups", "euronews", "politico eu", "tech.eu",
+                "reuters europe", "le monde", "handelsblatt"
+            ],
+            "US": [
+                "techcrunch", "the verge", "wired", "wsj", "bloomberg", "cnbc",
+                "forbes", "axios", "nyt", "venturebeat", "reuters", "ars technica"
+            ]
+        }
+        src_lower = (source_name or "").lower()
+        if any(pub in src_lower for pub in known_regional_sources.get(region_upper, [])):
+            return True
+
+        # 2. Check if the text explicitly references key regional identifiers
+        text = f"{title} {summary}".lower()
+        regional_keywords = {
+            "NG": [
+                "nigeria", "nigerian", "lagos", "abuja", "naira", "cbn", "central bank of nigeria",
+                "west africa", "african startup", "african tech", "flutterwave", "paystack",
+                "moniepoint", "opay", "jumia", "andela", "techcabal", "nairametrics"
+            ],
+            "KE": [
+                "kenya", "kenyan", "nairobi", "east africa", "mpesa", "m-pesa", "safaricom",
+                "shilling", "silicon savannah", "central bank of kenya", "cbk"
+            ],
+            "ZA": [
+                "south africa", "south african", "cape town", "johannesburg", "durban",
+                "rand", "eskom", "ramaphosa", "sarb", "naspers", "takealot"
+            ],
+            "UK": [
+                "united kingdom", "britain", "british", "london", "pound sterling", "bank of england",
+                "starmer", "rishi", "westminster", "downing street", "fca", "nhs"
+            ],
+            "CA": [
+                "canada", "canadian", "toronto", "vancouver", "ottawa", "montreal",
+                "bank of canada", "canadian dollar", "shopify", "trudeau"
+            ],
+            "IN": [
+                "india", "indian", "bengaluru", "bangalore", "delhi", "mumbai", "hyderabad",
+                "rupee", "rbi", "reserve bank of india", "modi", "upi", "nifty", "sensex"
+            ],
+            "EU": [
+                "european union", "brussels", "eurozone", "eu commission", "eu parliament",
+                "european central bank", "ecb", "gdpr", "ai act", "digital services act"
+            ],
+            "US": [
+                "united states", "america", "american", "silicon valley", "washington",
+                "wall street", "federal reserve", "congress", "white house"
+            ]
+        }
+
+        keywords = regional_keywords.get(region_upper, [])
+        return any(re.search(r'\b' + re.escape(kw) + r'\b', text) for kw in keywords)
+
+    @classmethod
     def get_query_candidates(cls, niche: str, sub_niche: str, keywords: Optional[str] = None, region: str = "GLOBAL") -> List[str]:
         """Generate targeted search queries tailored to niche, sub-niche, and region."""
         candidates = []
@@ -246,32 +335,39 @@ class DailyNewsService:
         raw_topics = [t.strip() for t in (sub_niche or "").split(",") if t.strip()]
         clean_topics = [t.replace("&", " and ").replace('"', '').replace("'", '').strip() for t in raw_topics if t.strip()]
 
-        # Regional modifier if applicable
+        reg_upper = (region or "GLOBAL").upper()
         reg_mod = ""
-        if region == "NG":
-            reg_mod = "Nigeria OR Africa"
-        elif region == "UK":
-            reg_mod = "UK OR Britain"
-        elif region == "IN":
-            reg_mod = "India"
-        elif region == "CA":
-            reg_mod = "Canada"
-        elif region == "ZA":
-            reg_mod = "South Africa"
-        elif region == "KE":
-            reg_mod = "Kenya OR East Africa"
+        if reg_upper == "NG":
+            reg_mod = "Nigeria OR Nigerian OR Lagos"
+        elif reg_upper == "UK":
+            reg_mod = "UK OR Britain OR British"
+        elif reg_upper == "IN":
+            reg_mod = "India OR Indian"
+        elif reg_upper == "CA":
+            reg_mod = "Canada OR Canadian"
+        elif reg_upper == "ZA":
+            reg_mod = "South Africa OR Johannesburg"
+        elif reg_upper == "KE":
+            reg_mod = "Kenya OR Nairobi"
+        elif reg_upper == "EU":
+            reg_mod = "Europe OR European Union"
 
-        # 1. Multi-topic disjunction with primary niche
+        # 1. Targeted regional combination
+        if reg_mod:
+            if clean_topics:
+                candidates.append(f"({clean_topics[0]} OR {niche_clean}) AND ({reg_mod})")
+            else:
+                candidates.append(f"{niche_clean} AND ({reg_mod})")
+
+        # 2. Multi-topic disjunction with primary niche
         if clean_topics and niche_clean:
-            if reg_mod:
-                candidates.append(f"({niche_clean} OR {clean_topics[0]}) AND ({reg_mod})")
             candidates.append(f"{niche_clean} OR {' OR '.join(clean_topics[:2])}")
             top_quoted = [f'"{t}"' for t in clean_topics[:2]]
             candidates.append(f"({' OR '.join(top_quoted)}) OR {niche_clean}")
         elif clean_topics:
             candidates.append(" OR ".join(clean_topics[:2]))
 
-        # 2. Add domain-specific high-signal terms for specialized niches
+        # 3. Add domain-specific high-signal terms for specialized niches
         n_lower = niche_clean.lower()
         if any(w in n_lower for w in ["creator", "media", "video", "content"]):
             candidates.append("creator economy OR youtube algorithm OR tiktok trends")
@@ -305,11 +401,34 @@ class DailyNewsService:
             result.append(niche_clean or "technology")
         return result
 
-    @staticmethod
-    def is_relevant_article(title: str, summary: str, niche: str, sub_niche: str, region: str = "GLOBAL") -> bool:
-        """Verify that an article is genuinely relevant to the creator's niche and sub-niche."""
+    @classmethod
+    def is_relevant_article(
+        cls,
+        title: str,
+        summary: str,
+        niche: str,
+        sub_niche: str,
+        region: str = "GLOBAL",
+        source_name: str = ""
+    ) -> bool:
+        """Verify that an article satisfies regional constraints and niche relevance."""
+        reg_upper = (region or "GLOBAL").upper()
+        # Strict regional constraint for specific countries
+        if reg_upper not in ("GLOBAL", "ALL"):
+            if not cls.is_regional_match(title, summary, source_name, reg_upper):
+                return False
+
         text = f"{title} {summary}".lower()
         n = (niche or "").lower().strip()
+
+        # Pure tech, startup, venture, and digital publications are inherently relevant for tech/business creators
+        pure_tech_publishers = [
+            "techcabal", "techpoint", "benjamin dada", "benjamindada",
+            "nairametrics", "sifted", "yourstory", "inc42", "betakit",
+            "techcrunch", "the verge", "techweez", "mybroadband", "itweb"
+        ]
+        if any(p in (source_name or "").lower() for p in pure_tech_publishers):
+            return True
 
         # Check primary niche name
         if n and n in text:
@@ -317,17 +436,16 @@ class DailyNewsService:
 
         # Check domain-specific synonyms
         synonyms = {
-            "creator": ["creator", "youtube", "tiktok", "video", "streamer", "influencer", "subscribers", "content", "podcast", "monetiz", "instagram", "reels", "shorts"],
+            "creator": ["creator", "youtube", "tiktok", "video", "streamer", "influencer", "subscribers", "content", "podcast", "monetiz", "instagram", "reels", "shorts", "media", "social media"],
             "farming": ["farm", "farmer", "agricultur", "crop", "livestock", "harvest", "soil", "cattle", "pastur", "agri", "dairy", "grain", "fertilizer", "poultry"],
-            "finance": ["money", "market", "invest", "stock", "econom", "fed", "bank", "wealth", "fund", "treasury", "fintech", "startup"],
+            "finance": ["money", "market", "invest", "stock", "econom", "fed", "bank", "wealth", "fund", "treasury", "fintech", "startup", "naira", "cbn"],
             "fitness": ["workout", "exercise", "muscle", "train", "diet", "gym", "bodybuild", "athlet", "cardio"],
             "health": ["health", "medic", "diseas", "doctor", "wellness", "biotech", "longev", "therap", "clinic"],
-            "technology": ["tech", "software", "ai", "hardware", "app", "code", "cyber", "data", "cloud", "model", "developer", "agent", "llm"],
-            "crypto": ["crypto", "bitcoin", "ethereum", "blockchain", "token", "btc", "eth", "solana", "web3"]
+            "technology": ["tech", "software", "ai", "hardware", "app", "code", "cyber", "data", "cloud", "model", "developer", "agent", "llm", "fintech", "digital", "platform", "startup", "telecom"],
+            "crypto": ["crypto", "bitcoin", "ethereum", "blockchain", "token", "btc", "eth", "solana", "web3", "stablecoin"]
         }
-        
-        # If niche is creator / media, also check creator synonyms
-        cat = DailyNewsService._map_niche_to_category(niche)
+
+        cat = cls._map_niche_to_category(niche)
         for syn in synonyms.get(cat, []) + synonyms.get(n, []):
             if syn in text:
                 return True
@@ -336,18 +454,6 @@ class DailyNewsService:
         sub_words = [w.lower() for w in re.findall(r'\b[a-zA-Z]{4,}\b', sub_niche or "")]
         matches = sum(1 for w in sub_words if w in text)
         if matches >= 1:
-            return True
-
-        # If region is localized (e.g. NG, UK, IN), check regional keywords
-        if region == "NG" and any(k in text for k in ["nigeria", "lagos", "african", "naira", "cabal", "techpoint"]):
-            return True
-        if region == "KE" and any(k in text for k in ["kenya", "nairobi", "east africa", "mpesa", "shilling"]):
-            return True
-        if region == "ZA" and any(k in text for k in ["south africa", "cape town", "johannesburg", "rand"]):
-            return True
-        if region == "UK" and any(k in text for k in ["uk", "britain", "london", "pound", "rishi", "sifted"]):
-            return True
-        if region == "IN" and any(k in text for k in ["india", "bengaluru", "delhi", "mumbai", "rupee", "yourstory"]):
             return True
 
         return False
@@ -397,14 +503,15 @@ class DailyNewsService:
                     for item in data.get("results", []):
                         title = item.get("title") or ""
                         summary = (item.get("description") or title)[:350]
+                        src_name = item.get("source_id") or "News Wire"
                         if not title or "[Removed]" in title:
                             continue
-                        if not cls.is_relevant_article(title, summary, niche, sub_niche, region):
+                        if not cls.is_relevant_article(title, summary, niche, sub_niche, region, src_name):
                             continue
                         articles.append({
                             "headline": title,
                             "summary": summary,
-                            "source_name": item.get("source_id") or "News Wire",
+                            "source_name": src_name,
                             "source_url": item.get("link") or "",
                             "image_url": item.get("image_url"),
                             "published_date": item.get("pubDate") or datetime.utcnow().strftime("%a, %d %b %Y"),
@@ -416,22 +523,23 @@ class DailyNewsService:
 
         # B. NewsAPI.org format (32 hex characters)
         elif len(clean_key) == 32 and re.match(r'^[a-f0-9]{32}$', clean_key, re.I):
-            for query in candidates[:2]:
-                encoded_query = urllib.parse.quote(query)
-                url = f"https://newsapi.org/v2/everything?q={encoded_query}&sortBy=relevancy&pageSize={limit}&language=en&apiKey={clean_key}"
-                data = await asyncio.to_thread(_fetch_url, url)
+            # If region is country-specific, query top headlines for that country first
+            if country_code:
+                cat_url = f"https://newsapi.org/v2/top-headlines?country={country_code}&pageSize={limit}&apiKey={clean_key}"
+                data = await asyncio.to_thread(_fetch_url, cat_url)
                 if data and data.get("status") == "ok":
                     for item in data.get("articles", []):
                         title = item.get("title") or ""
                         summary = (item.get("description") or title)[:350]
+                        src_name = item.get("source", {}).get("name") or "Verified News"
                         if not title or "[Removed]" in title:
                             continue
-                        if not cls.is_relevant_article(title, summary, niche, sub_niche, region):
+                        if not cls.is_relevant_article(title, summary, niche, sub_niche, region, src_name):
                             continue
                         articles.append({
                             "headline": title,
                             "summary": summary,
-                            "source_name": item.get("source", {}).get("name") or "Verified News",
+                            "source_name": src_name,
                             "source_url": item.get("url") or "",
                             "image_url": item.get("urlToImage"),
                             "published_date": item.get("publishedAt") or datetime.utcnow().strftime("%a, %d %b %Y"),
@@ -441,26 +549,32 @@ class DailyNewsService:
                         if len(articles) >= limit:
                             return articles
 
-            # Top headlines fallback with country code
-            if country_code and len(articles) < 3:
-                cat_url = f"https://newsapi.org/v2/top-headlines?country={country_code}&category={category_name}&pageSize={limit}&apiKey={clean_key}"
-                data = await asyncio.to_thread(_fetch_url, cat_url)
+            # Query everything endpoint using candidate queries
+            for query in candidates[:2]:
+                encoded_query = urllib.parse.quote(query)
+                url = f"https://newsapi.org/v2/everything?q={encoded_query}&sortBy=relevancy&pageSize={limit}&language=en&apiKey={clean_key}"
+                data = await asyncio.to_thread(_fetch_url, url)
                 if data and data.get("status") == "ok":
                     for item in data.get("articles", []):
                         title = item.get("title") or ""
                         summary = (item.get("description") or title)[:350]
+                        src_name = item.get("source", {}).get("name") or "Verified News"
                         if not title or "[Removed]" in title:
+                            continue
+                        if not cls.is_relevant_article(title, summary, niche, sub_niche, region, src_name):
                             continue
                         articles.append({
                             "headline": title,
                             "summary": summary,
-                            "source_name": item.get("source", {}).get("name") or "Top Wire",
+                            "source_name": src_name,
                             "source_url": item.get("url") or "",
                             "image_url": item.get("urlToImage"),
                             "published_date": item.get("publishedAt") or datetime.utcnow().strftime("%a, %d %b %Y"),
                             "region": region,
-                            "category": category_name
+                            "category": cls._detect_category(title, summary, niche)
                         })
+                        if len(articles) >= limit:
+                            return articles
 
         # C. GNews.io format
         else:
@@ -474,10 +588,13 @@ class DailyNewsService:
                     for item in data.get("articles", []):
                         title = item.get("title") or ""
                         summary = (item.get("description") or title)[:350]
+                        src_name = item.get("source", {}).get("name") or "GNews Wire"
+                        if not cls.is_relevant_article(title, summary, niche, sub_niche, region, src_name):
+                            continue
                         articles.append({
                             "headline": title,
                             "summary": summary,
-                            "source_name": item.get("source", {}).get("name") or "GNews Wire",
+                            "source_name": src_name,
                             "source_url": item.get("url") or "",
                             "image_url": item.get("image"),
                             "published_date": item.get("publishedAt") or datetime.utcnow().strftime("%a, %d %b %Y"),
@@ -506,7 +623,8 @@ class DailyNewsService:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         }
 
-        reg_info = REGION_CONFIG.get(region, REGION_CONFIG["GLOBAL"])
+        reg_upper = (region or "GLOBAL").upper()
+        reg_info = REGION_CONFIG.get(reg_upper, REGION_CONFIG["GLOBAL"])
         gl = reg_info.get("gl", "US")
         hl = reg_info.get("hl", "en-US")
         ceid = reg_info.get("ceid", "US:en")
@@ -519,7 +637,45 @@ class DailyNewsService:
             except Exception:
                 return None
 
-        # 1. Localized Google News RSS for each targeted candidate query
+        # 1. FOR NON-GLOBAL REGIONS: Prioritize authoritative direct regional publications FIRST
+        if reg_upper != "GLOBAL":
+            direct_regional = cls.REGIONAL_DIRECT_FEEDS.get(reg_upper, [])
+            for src_name, feed_url in direct_regional:
+                if len(articles) >= limit:
+                    break
+                raw_xml = await asyncio.to_thread(_fetch_rss, feed_url)
+                if raw_xml:
+                    feed = feedparser.parse(raw_xml)
+                    for entry in feed.entries[:8]:
+                        title = entry.get("title", "")
+                        norm_title = title.lower().strip()
+                        if not title or norm_title in seen_titles:
+                            continue
+
+                        raw_summary = entry.get("summary", "") or entry.get("description", "")
+                        soup = BeautifulSoup(raw_summary, "html.parser")
+                        img_tag = soup.find("img")
+                        image_url = img_tag.get("src") if img_tag else None
+                        clean_summary = soup.get_text(separator=" ").strip() or title
+
+                        if not cls.is_relevant_article(title, clean_summary, niche, sub_niche, reg_upper, src_name):
+                            continue
+
+                        seen_titles.add(norm_title)
+                        articles.append({
+                            "headline": title,
+                            "summary": clean_summary[:350],
+                            "source_name": src_name,
+                            "source_url": entry.get("link", ""),
+                            "image_url": image_url,
+                            "published_date": entry.get("published", datetime.utcnow().strftime("%a, %d %b %Y")),
+                            "region": reg_upper,
+                            "category": cls._detect_category(title, clean_summary, niche)
+                        })
+                        if len(articles) >= limit:
+                            break
+
+        # 2. Localized Google News RSS with regional query targeting
         for query in candidates:
             if len(articles) >= limit:
                 break
@@ -552,7 +708,7 @@ class DailyNewsService:
                     if not clean_summary:
                         clean_summary = title
 
-                    if not cls.is_relevant_article(title, clean_summary, niche, sub_niche, region):
+                    if not cls.is_relevant_article(title, clean_summary, niche, sub_niche, reg_upper, source_name):
                         continue
 
                     seen_titles.add(norm_title)
@@ -566,87 +722,50 @@ class DailyNewsService:
                         "source_url": link,
                         "image_url": image_url,
                         "published_date": pub_date,
-                        "region": region,
+                        "region": reg_upper,
                         "category": cls._detect_category(title, clean_summary, niche)
                     })
                     if len(articles) >= limit:
                         break
 
-        # 2. Blend direct regional publications for this specific region
-        direct_regional = cls.REGIONAL_DIRECT_FEEDS.get(region, cls.REGIONAL_DIRECT_FEEDS.get("GLOBAL", []))
-        for src_name, feed_url in direct_regional:
-            if len(articles) >= limit:
-                break
-            raw_xml = await asyncio.to_thread(_fetch_rss, feed_url)
-            if raw_xml:
-                feed = feedparser.parse(raw_xml)
-                for entry in feed.entries[:6]:
-                    title = entry.get("title", "")
-                    norm_title = title.lower().strip()
-                    if not title or norm_title in seen_titles:
-                        continue
+        # 3. For GLOBAL view: Blend direct niche & creator publications (Tubefilter, Digiday, Verge, etc.)
+        if reg_upper == "GLOBAL":
+            target_cat = category or cls._map_niche_to_category(niche)
+            direct_niche = cls.NICHE_DIRECT_FEEDS.get(target_cat, [])
+            if target_cat != "creator":
+                direct_niche = direct_niche + cls.NICHE_DIRECT_FEEDS.get("creator", [])[:2]
 
-                    raw_summary = entry.get("summary", "") or entry.get("description", "")
-                    soup = BeautifulSoup(raw_summary, "html.parser")
-                    img_tag = soup.find("img")
-                    image_url = img_tag.get("src") if img_tag else None
-                    clean_summary = soup.get_text(separator=" ").strip() or title
+            for src_name, feed_url in direct_niche:
+                if len(articles) >= limit:
+                    break
+                raw_xml = await asyncio.to_thread(_fetch_rss, feed_url)
+                if raw_xml:
+                    feed = feedparser.parse(raw_xml)
+                    for entry in feed.entries[:5]:
+                        title = entry.get("title", "")
+                        norm_title = title.lower().strip()
+                        if not title or norm_title in seen_titles:
+                            continue
 
-                    if not cls.is_relevant_article(title, clean_summary, niche, sub_niche, region):
-                        continue
+                        raw_summary = entry.get("summary", "") or entry.get("description", "")
+                        soup = BeautifulSoup(raw_summary, "html.parser")
+                        img_tag = soup.find("img")
+                        image_url = img_tag.get("src") if img_tag else None
+                        clean_summary = soup.get_text(separator=" ").strip() or title
 
-                    seen_titles.add(norm_title)
-                    articles.append({
-                        "headline": title,
-                        "summary": clean_summary[:350],
-                        "source_name": src_name,
-                        "source_url": entry.get("link", ""),
-                        "image_url": image_url,
-                        "published_date": entry.get("published", datetime.utcnow().strftime("%a, %d %b %Y")),
-                        "region": region,
-                        "category": cls._detect_category(title, clean_summary, niche)
-                    })
-                    if len(articles) >= limit:
-                        break
-
-        # 3. Blend direct niche publications (creator economy, tech, business)
-        target_cat = category or cls._map_niche_to_category(niche)
-        direct_niche = cls.NICHE_DIRECT_FEEDS.get(target_cat, [])
-        # Always mix in creator publications for digital creators
-        if target_cat != "creator":
-            direct_niche = direct_niche + cls.NICHE_DIRECT_FEEDS.get("creator", [])[:2]
-
-        for src_name, feed_url in direct_niche:
-            if len(articles) >= limit:
-                break
-            raw_xml = await asyncio.to_thread(_fetch_rss, feed_url)
-            if raw_xml:
-                feed = feedparser.parse(raw_xml)
-                for entry in feed.entries[:5]:
-                    title = entry.get("title", "")
-                    norm_title = title.lower().strip()
-                    if not title or norm_title in seen_titles:
-                        continue
-
-                    raw_summary = entry.get("summary", "") or entry.get("description", "")
-                    soup = BeautifulSoup(raw_summary, "html.parser")
-                    img_tag = soup.find("img")
-                    image_url = img_tag.get("src") if img_tag else None
-                    clean_summary = soup.get_text(separator=" ").strip() or title
-
-                    seen_titles.add(norm_title)
-                    articles.append({
-                        "headline": title,
-                        "summary": clean_summary[:350],
-                        "source_name": src_name,
-                        "source_url": entry.get("link", ""),
-                        "image_url": image_url,
-                        "published_date": entry.get("published", datetime.utcnow().strftime("%a, %d %b %Y")),
-                        "region": "GLOBAL" if region == "GLOBAL" else region,
-                        "category": cls._detect_category(title, clean_summary, niche)
-                    })
-                    if len(articles) >= limit:
-                        break
+                        seen_titles.add(norm_title)
+                        articles.append({
+                            "headline": title,
+                            "summary": clean_summary[:350],
+                            "source_name": src_name,
+                            "source_url": entry.get("link", ""),
+                            "image_url": image_url,
+                            "published_date": entry.get("published", datetime.utcnow().strftime("%a, %d %b %Y")),
+                            "region": "GLOBAL",
+                            "category": cls._detect_category(title, clean_summary, niche)
+                        })
+                        if len(articles) >= limit:
+                            break
 
         return articles
 
@@ -691,7 +810,7 @@ class DailyNewsService:
             cached = query.order_by(NewsArticle.id.desc()).limit(25).all()
             valid_cached = [
                 a for a in cached
-                if cls.is_relevant_article(a.headline, a.summary, niche, sub_niche, active_region)
+                if cls.is_relevant_article(a.headline, a.summary, niche, sub_niche, active_region, a.source_name)
             ]
             if len(valid_cached) >= 6:
                 return valid_cached
@@ -708,7 +827,7 @@ class DailyNewsService:
             old_arts = purge_query.all()
             deleted_count = 0
             for oa in old_arts:
-                if not cls.is_relevant_article(oa.headline, oa.summary, niche, sub_niche, active_region) or force_refresh:
+                if not cls.is_relevant_article(oa.headline, oa.summary, niche, sub_niche, active_region, oa.source_name) or force_refresh:
                     db.delete(oa)
                     deleted_count += 1
             if deleted_count > 0:
@@ -735,9 +854,23 @@ class DailyNewsService:
 
         fresh_items: List[Dict[str, Any]] = []
 
-        # 1. Query specialized News APIs if any keys are configured
+        # 1. FOR COUNTRY-SPECIFIC FEEDS: Prioritize direct regional RSS first for authentic local stories
+        if active_region != "GLOBAL":
+            rss_items = await cls.fetch_news_rss(
+                candidates,
+                limit=25,
+                niche=niche,
+                sub_niche=sub_niche,
+                region=active_region,
+                category=category
+            )
+            for ri in rss_items:
+                if not any(f["headline"].strip().lower() == ri["headline"].strip().lower() for f in fresh_items):
+                    fresh_items.append(ri)
+
+        # 2. Query specialized News APIs if any keys are configured
         for k in configured_keys:
-            if len(fresh_items) >= 15:
+            if len(fresh_items) >= 25:
                 break
             api_items = await cls.fetch_specialized_news_api(
                 candidates=candidates,
@@ -751,8 +884,8 @@ class DailyNewsService:
                 if not any(f["headline"].strip().lower() == item["headline"].strip().lower() for f in fresh_items):
                     fresh_items.append(item)
 
-        # 2. Blend with Google News RSS & regional/niche publication feeds
-        if len(fresh_items) < 18:
+        # 3. For GLOBAL view, blend Google News RSS and direct niche/creator publications
+        if active_region == "GLOBAL" and len(fresh_items) < 20:
             rss_items = await cls.fetch_news_rss(
                 candidates,
                 limit=25,
