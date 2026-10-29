@@ -28,17 +28,29 @@ FALLBACK_AVATAR_SVG = (
     '</svg>'
 )
 
+FALLBACK_THUMBNAIL_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 90">'
+    '<rect width="160" height="90" fill="#12071d"/>'
+    '<circle cx="80" cy="45" r="18" fill="#240e3a"/>'
+    '<polygon points="76,37 88,45 76,53" fill="#f59e0b"/>'
+    '</svg>'
+)
+
 @router.get("/avatar-proxy")
-async def proxy_avatar(url: str):
+@router.get("/media-proxy")
+@router.get("/image-proxy")
+async def proxy_media(url: str, kind: Optional[str] = "avatar"):
     """
-    Proxies social CDN avatar images (Instagram, TikTok, X/Twitter, YouTube)
+    Proxies social CDN media images (Instagram posts/avatars, TikTok, X, YouTube)
     to bypass browser ad-blockers (e.g. Brave/uBlock blocking cdninstagram.com),
     CORS restrictions, and hotlink referer checks.
     """
     from fastapi.responses import Response
 
+    fallback_svg = FALLBACK_THUMBNAIL_SVG if kind == "thumbnail" else FALLBACK_AVATAR_SVG
+
     if not url or not (url.startswith("http://") or url.startswith("https://")):
-        return Response(content=FALLBACK_AVATAR_SVG, media_type="image/svg+xml")
+        return Response(content=fallback_svg, media_type="image/svg+xml")
 
     try:
         async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
@@ -64,7 +76,7 @@ async def proxy_avatar(url: str):
     except Exception:
         pass
 
-    return Response(content=FALLBACK_AVATAR_SVG, media_type="image/svg+xml")
+    return Response(content=fallback_svg, media_type="image/svg+xml")
 
 @router.get("/accounts")
 def list_accounts(
