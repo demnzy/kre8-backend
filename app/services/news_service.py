@@ -720,20 +720,36 @@ class DailyNewsService:
 
         # Build prioritized query candidates
         candidates = cls.get_query_candidates(niche, sub_niche, keywords, region=active_region)
-        active_news_key = api_key or getattr(settings, "NEWS_API_KEY", "")
+
+        # Collect all available API keys (user custom key + backend .env keys)
+        configured_keys: List[str] = []
+        if api_key and api_key.strip():
+            configured_keys.append(api_key.strip())
+        for env_key in [
+            getattr(settings, "NEWS_API_KEY", ""),
+            getattr(settings, "GNEWS_API_KEY", ""),
+            getattr(settings, "NEWSDATA_API_KEY", "")
+        ]:
+            if env_key and env_key.strip() and env_key.strip() not in configured_keys:
+                configured_keys.append(env_key.strip())
 
         fresh_items: List[Dict[str, Any]] = []
 
-        # 1. Query specialized News APIs if key provided
-        if active_news_key and active_news_key.strip():
-            fresh_items = await cls.fetch_specialized_news_api(
+        # 1. Query specialized News APIs if any keys are configured
+        for k in configured_keys:
+            if len(fresh_items) >= 15:
+                break
+            api_items = await cls.fetch_specialized_news_api(
                 candidates=candidates,
-                api_key=active_news_key,
-                limit=20,
+                api_key=k,
+                limit=15,
                 niche=niche,
                 sub_niche=sub_niche,
                 region=active_region
             )
+            for item in api_items:
+                if not any(f["headline"].strip().lower() == item["headline"].strip().lower() for f in fresh_items):
+                    fresh_items.append(item)
 
         # 2. Blend with Google News RSS & regional/niche publication feeds
         if len(fresh_items) < 18:

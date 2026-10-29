@@ -41,8 +41,11 @@ class Settings:
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     
-    # News API Key (NewsAPI.org or GNews.io)
+    # News API Keys (NewsAPI.org, GNews.io, NewsData.io)
     NEWS_API_KEY: str = os.getenv("NEWS_API_KEY", "")
+    GNEWS_API_KEY: str = os.getenv("GNEWS_API_KEY", "")
+    NEWSDATA_API_KEY: str = os.getenv("NEWSDATA_API_KEY", "")
+    GUARDIAN_API_KEY: str = os.getenv("GUARDIAN_API_KEY", "")
 
     # Optional Social Platform & Scraper API Keys
     YOUTUBE_API_KEY: str = os.getenv("YOUTUBE_API_KEY", "")
