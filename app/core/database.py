@@ -67,11 +67,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 def ensure_database_schema(bind_engine):
-    """Automatically add missing columns in SQLite for seamless local schema evolution."""
-    # Supabase / PostgreSQL creates complete tables and columns automatically from Base.metadata.create_all
-    if bind_engine.dialect.name != "sqlite":
-        return
-
+    """Automatically add missing columns in SQLite & PostgreSQL for seamless schema evolution."""
     from sqlalchemy import text
     columns_to_add = [
         ("user_preferences", "ai_provider", "VARCHAR(50) DEFAULT 'gemini'"),
@@ -97,12 +93,17 @@ def ensure_database_schema(bind_engine):
         ("news_articles", "category", "VARCHAR(50) DEFAULT 'general'"),
     ]
     with bind_engine.connect() as conn:
+        dialect = bind_engine.dialect.name
         for table, col, col_type in columns_to_add:
             try:
-                res = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
-                existing_cols = [row[1] for row in res]
-                if existing_cols and col not in existing_cols:
-                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
+                if dialect == "sqlite":
+                    res = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+                    existing_cols = [row[1] for row in res]
+                    if existing_cols and col not in existing_cols:
+                        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
+                        conn.commit()
+                elif dialect in ("postgresql", "postgres"):
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_type}"))
                     conn.commit()
             except Exception as e:
                 logger.debug(f"[Database Schema] Note on {table}.{col}: {e}")
