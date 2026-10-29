@@ -6,7 +6,17 @@ from app.core.config import settings
 logger = logging.getLogger("kre8.db")
 
 # Normalize postgres:// or postgresql:// to ensure compatibility across SQLAlchemy drivers
-raw_url = settings.DATABASE_URL or "sqlite:///./kre8.db"
+raw_url = (settings.DATABASE_URL or "sqlite:///./kre8.db").strip()
+
+# Strip any surrounding quotes or accidental 'DATABASE_URL=' prefix from Coolify/PaaS UI
+while (raw_url.startswith('"') and raw_url.endswith('"')) or (raw_url.startswith("'") and raw_url.endswith("'")):
+    raw_url = raw_url[1:-1].strip()
+
+if raw_url.startswith("DATABASE_URL="):
+    raw_url = raw_url.split("DATABASE_URL=", 1)[1].strip()
+    while (raw_url.startswith('"') and raw_url.endswith('"')) or (raw_url.startswith("'") and raw_url.endswith("'")):
+        raw_url = raw_url[1:-1].strip()
+
 if raw_url.startswith("postgres://"):
     db_url = raw_url.replace("postgres://", "postgresql+psycopg2://", 1)
 elif raw_url.startswith("postgresql://") and not raw_url.startswith("postgresql+"):
