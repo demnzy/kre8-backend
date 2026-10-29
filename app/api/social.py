@@ -20,6 +20,52 @@ from app.api.auth import get_current_user
 
 router = APIRouter(prefix="/social", tags=["social"])
 
+FALLBACK_AVATAR_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+    '<circle cx="50" cy="50" r="50" fill="#1b0b2b"/>'
+    '<text x="50%" y="54%" text-anchor="middle" dominant-baseline="middle" '
+    'fill="#f59e0b" font-family="sans-serif" font-weight="bold" font-size="40">K</text>'
+    '</svg>'
+)
+
+@router.get("/avatar-proxy")
+async def proxy_avatar(url: str):
+    """
+    Proxies social CDN avatar images (Instagram, TikTok, X/Twitter, YouTube)
+    to bypass browser ad-blockers (e.g. Brave/uBlock blocking cdninstagram.com),
+    CORS restrictions, and hotlink referer checks.
+    """
+    from fastapi.responses import Response
+
+    if not url or not (url.startswith("http://") or url.startswith("https://")):
+        return Response(content=FALLBACK_AVATAR_SVG, media_type="image/svg+xml")
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/122.0.0.0 Safari/537.36"
+                ),
+                "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+            }
+            res = await client.get(url, headers=headers)
+            if res.status_code == 200 and res.content:
+                content_type = res.headers.get("content-type", "image/jpeg")
+                return Response(
+                    content=res.content,
+                    media_type=content_type,
+                    headers={
+                        "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
+                        "Access-Control-Allow-Origin": "*",
+                    }
+                )
+    except Exception:
+        pass
+
+    return Response(content=FALLBACK_AVATAR_SVG, media_type="image/svg+xml")
+
 @router.get("/accounts")
 def list_accounts(
     current_user: User = Depends(get_current_user),
